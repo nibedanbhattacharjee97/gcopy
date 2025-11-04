@@ -4,6 +4,7 @@ import json
 from google.oauth2.service_account import Credentials
 from datetime import date, datetime
 import hashlib
+import os
 
 # ============================================
 # ⚙️ PAGE CONFIG
@@ -64,15 +65,27 @@ def verify_password(password, hashed):
     return hash_password(password) == hashed
 
 # ============================================
-# 🔐 GOOGLE AUTHENTICATION (Streamlit Secrets ✅ Secure)
+# 🔐 GOOGLE AUTHENTICATION (Auto Switch)
 # ============================================
 scope = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
 
-service_info = json.loads(st.secrets["gcp_service_account"])
-credentials = Credentials.from_service_account_info(service_info, scopes=scope)
+credentials = None
+
+try:
+    # ✅ Running on Streamlit Cloud
+    service_info = st.secrets["gcp_service_account"]
+    credentials = Credentials.from_service_account_info(service_info, scopes=scope)
+except Exception:
+    # ✅ Running Locally using JSON file
+    if os.path.exists("service_account.json"):
+        credentials = Credentials.from_service_account_file("service_account.json", scopes=scope)
+    else:
+        st.error("❌ No credentials found: Add service_account.json locally or add gcp_service_account in Streamlit Secrets.")
+        st.stop()
+
 client = gspread.authorize(credentials)
 
 # ============================================
