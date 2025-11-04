@@ -14,8 +14,7 @@ st.set_page_config(page_title="Student Verification Entry Form", page_icon="✅"
 # ============================================
 st.markdown("""
     <style>
-        body { background: linear-gradient(135deg, #00aaff, #00ffaa); }
-        .main { background: transparent; }
+        .main { background: linear-gradient(135deg, #00aaff, #00ffaa); }
         .login-card {
             background-color: white;
             border-radius: 16px;
@@ -66,21 +65,19 @@ def verify_password(password, hashed):
 # ============================================
 # 🔐 GOOGLE AUTHENTICATION
 # ============================================
+service_file = "service_account.json"
 scope = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
-credentials = Credentials.from_service_account_file("service_account.json", scopes=scope)
+credentials = Credentials.from_service_account_file(service_file, scopes=scope)
 client = gspread.authorize(credentials)
 
 # ============================================
 # 📄 GOOGLE SHEETS CONNECTIONS
 # ============================================
-SHEET_NAME = "Test"
-LOGIN_SHEET_NAME = "Test_Spoc_PassWord"
-
-sheet = client.open(SHEET_NAME).sheet1
-login_sheet = client.open(LOGIN_SHEET_NAME).sheet1
+sheet = client.open("Test").sheet1
+login_sheet = client.open("Test_Spoc_PassWord").sheet1
 
 # ============================================
 # 🔑 SESSION STATE INIT
@@ -91,10 +88,11 @@ if "spoc_name" not in st.session_state:
     st.session_state.spoc_name = ""
 
 # ============================================
-# 🧭 SIDEBAR MENU
+# 📌 SIDEBAR MENU
 # ============================================
-menu = ["Login", "Register"]
-choice = st.sidebar.selectbox("Select Option", menu)
+if not st.session_state.logged_in:
+    menu = ["Login", "Register"]
+    choice = st.sidebar.selectbox("Select Option", menu)
 
 # ============================================
 # 🚪 LOGOUT
@@ -107,7 +105,7 @@ if st.session_state.logged_in:
             st.session_state.logged_in = False
             st.session_state.spoc_name = ""
             st.success("👋 Logged out successfully.")
-            st.rerun()  # 🔁 Immediately reloads page after logout
+            st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 
 # ============================================
@@ -116,7 +114,6 @@ if st.session_state.logged_in:
 def show_register():
     st.markdown('<div class="login-card">', unsafe_allow_html=True)
     st.markdown('<div class="login-title">🆕 SPOC Registration</div>', unsafe_allow_html=True)
-    st.markdown("Create your SPOC login credentials below 👇")
 
     new_user = st.text_input("Enter SPOC Name")
     new_password = st.text_input("Enter Password", type="password")
@@ -124,25 +121,26 @@ def show_register():
     if st.button("Register"):
         if new_user and new_password:
             all_records = login_sheet.get_all_records()
-            existing_users = [r["spoc_name"] for r in all_records if "spoc_name" in r]
+            existing_users = [r.get("spoc_name", "") for r in all_records]
 
             if new_user in existing_users:
-                st.error("❌ SPOC name already exists. Please choose another.")
+                st.error("❌ SPOC name already exists!")
             else:
                 hashed_pass = hash_password(new_password)
                 created_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 login_sheet.append_row([new_user, hashed_pass, created_date])
-                st.success("✅ Registration successful! Please login now.")
+                st.success("✅ Registration successful! Please Login now.")
         else:
-            st.warning("⚠️ Please enter both SPOC name and password.")
+            st.warning("⚠️ Enter both fields!")
+
     st.markdown("</div>", unsafe_allow_html=True)
 
 # ============================================
 # 🔐 LOGIN PAGE
 # ============================================
 def show_login():
-
-    st.markdown('<div class="login-title">SPOC Login Portal</div>', unsafe_allow_html=True)
+    st.markdown('<div class="login-card">', unsafe_allow_html=True)
+    st.markdown('<div class="login-title">🔐 SPOC Login Portal</div>', unsafe_allow_html=True)
 
     username = st.text_input("Enter SPOC Name")
     password = st.text_input("Enter Password", type="password")
@@ -150,21 +148,22 @@ def show_login():
     if st.button("Login"):
         try:
             all_records = login_sheet.get_all_records()
-            user_data = next((r for r in all_records if r["spoc_name"] == username), None)
+            user_data = next((r for r in all_records if r.get("spoc_name", "") == username), None)
 
-            if user_data and verify_password(password, user_data["password"]):
+            if user_data and verify_password(password, user_data.get("password", "")):
                 st.session_state.logged_in = True
                 st.session_state.spoc_name = username
                 st.success(f"✅ Welcome {username}!")
-                st.rerun()  # 🔁 Immediately reload page to show main form
+                st.rerun()
             else:
-                st.error("❌ Invalid credentials. Please try again.")
+                st.error("❌ Invalid Username or Password")
         except Exception as e:
-            st.error(f"⚠️ Error reading login sheet: {e}")
+            st.error(f"⚠️ Error: {e}")
+
     st.markdown("</div>", unsafe_allow_html=True)
 
 # ============================================
-# 📋 MAIN FORM (AFTER LOGIN)
+# 📋 MAIN FORM
 # ============================================
 def show_main_form():
     st.title("📋 Student Verification Entry Form")
@@ -187,7 +186,7 @@ def show_main_form():
             current_company = st.text_input("Current Company Name")
             current_salary = st.text_input("Current Salary")
             current_designation = st.text_input("Current Designation")
-            doj = st.date_input("DOJ", value=date.today())
+            doj = st.date_input("DOJ")
 
         with col3:
             reason_leaving = st.text_area("Reason Behind leaving the Job")
@@ -195,8 +194,6 @@ def show_main_form():
             nps = st.slider("Net Promoting Score (0-10)", 0, 10, 5)
             verification_date = st.date_input("Verification Date", value=date.today())
             remarks = st.text_area("Remarks")
-            remarks_1 = st.text_area("Remarks_1")
-            remarks_3 = st.text_area("Remarks_3")
 
         submitted = st.form_submit_button("Submit Data ✅")
 
@@ -219,22 +216,20 @@ def show_main_form():
                 need_job,
                 nps,
                 str(verification_date),
-                remarks,
-                remarks_1,
-                remarks_3
+                remarks
             ]
             sheet.append_row(data)
-            st.success("✅ Data successfully submitted to Google Sheet!")
+            st.success("✅ Data submitted successfully!")
         except Exception as e:
-            st.error(f"❌ Error submitting data: {e}")
+            st.error(f"❌ Error: {e}")
 
 # ============================================
-# 🌐 ROUTER-LIKE FLOW
+# 🌍 PAGE ROUTING
 # ============================================
 if not st.session_state.logged_in:
     if choice == "Login":
         show_login()
-    elif choice == "Register":
+    else:
         show_register()
 else:
     show_main_form()
