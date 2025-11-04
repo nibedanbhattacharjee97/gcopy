@@ -1,5 +1,6 @@
 import streamlit as st
 import gspread
+import json
 from google.oauth2.service_account import Credentials
 from datetime import date, datetime
 import hashlib
@@ -63,14 +64,15 @@ def verify_password(password, hashed):
     return hash_password(password) == hashed
 
 # ============================================
-# 🔐 GOOGLE AUTHENTICATION
+# 🔐 GOOGLE AUTHENTICATION (Streamlit Secrets ✅ Secure)
 # ============================================
-service_file = "service_account.json"
 scope = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
-credentials = Credentials.from_service_account_file(service_file, scopes=scope)
+
+service_info = json.loads(st.secrets["gcp_service_account"])
+credentials = Credentials.from_service_account_info(service_info, scopes=scope)
 client = gspread.authorize(credentials)
 
 # ============================================
@@ -153,7 +155,7 @@ def show_login():
             if user_data and verify_password(password, user_data.get("password", "")):
                 st.session_state.logged_in = True
                 st.session_state.spoc_name = username
-                st.success(f"✅ Welcome {username}!")
+                st.success(f"✅ Welcome {username}! 🎉")
                 st.rerun()
             else:
                 st.error("❌ Invalid Username or Password")
@@ -219,7 +221,7 @@ def show_main_form():
                 remarks
             ]
             sheet.append_row(data)
-            st.success("✅ Data submitted successfully!")
+            st.success("✅ Data submitted successfully to Google Sheet!")
         except Exception as e:
             st.error(f"❌ Error: {e}")
 
