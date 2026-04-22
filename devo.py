@@ -227,7 +227,7 @@ def load_from_test2_to_session(test2_records, contact_number):
     if matched_row:
         st.session_state.cmisid_val = safe_str(matched_row.get("CMIS ID", ""))
         st.session_state.current_company_val = safe_str(matched_row.get("Company Name", ""))
-        st.session_state.current_salary_val = safe_str(matched_row.get("salary", ""))
+        st.session_state.current_salary_val = safe_str(matched_row.get("Salary", ""))
         st.session_state.current_designation_val = safe_str(matched_row.get("Deg", ""))
         st.session_state.doj_val = parse_doj(matched_row.get("DOJ", ""))
         st.session_state.match_found = True
@@ -452,7 +452,7 @@ def show_main_form():
 
             student_touch = st.selectbox(
                 "Students Touch Method",
-                ["SPOC_Call", "Tikona_Call"]
+                ["Call", "WhatsApp", "SMS", "Email", "Other"]
             )
 
             student_name = st.text_input(
@@ -483,7 +483,7 @@ def show_main_form():
 
             retention_status = st.selectbox(
                 "Retention Status",
-                ["Working in same job", "Not_working_at_all", "Working in different job","Confirmed Name But Didn't Share Any Information.","Left_The_Job","Will joined after some days","Not a student of Anudip","Language issue","Face Not match","Rejected","Hold"]
+                ["Working", "Not Working", "Unknown"]
             )
 
             months_working = st.number_input(
@@ -518,11 +518,11 @@ def show_main_form():
             st.markdown('<div class="section-card">', unsafe_allow_html=True)
             st.markdown('<div class="form-title">📝 Verification Feedback</div>', unsafe_allow_html=True)
 
-            reason_leaving = st.selectbox("Distance Issue","Pursuing Higher Studies.","Job Profile Did Not Match","Family Issue","Medical & Health Issue","Casually Left The Job.","Salary Issue","Heavy Workload","Unhealthy Work Environment.","Office Timing","Night Shift","Internship/Project Completed","Company Closed","Terminated","Don't Want To Share","Others")
+            reason_leaving = st.text_area("Reason")
             need_job = st.selectbox("Need Job", ["Yes", "No"])
             nps = st.slider("NPS", 0, 10, 5)
             verification_date = st.date_input("Verification Date", value=date.today())
-            remarks = st.selectbox("Did_not_joined_job_due_to_personal_issue","Did_not_joined_job_due_to_profile_issue","Did not get any information from the employer","Did not get selected","Did not get selected","Did not respond to our call","Network issue","Switched off","Incoming Call Is Not Avialable","Wrong Number")
+            remarks = st.text_area("Remarks")
 
             st.markdown("</div>", unsafe_allow_html=True)
 
