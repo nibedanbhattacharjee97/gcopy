@@ -495,7 +495,7 @@ def show_main_form():
 
             contactable = st.selectbox(
                 "Contactable",
-                ["Yes", "No"]
+                ["--", "Yes", "No"]
             )
 
             st.markdown("</div>", unsafe_allow_html=True)
@@ -506,9 +506,10 @@ def show_main_form():
 
             retention_status = st.selectbox(
                 "Retention Status",
-                [
-                    "Unable_to_track",
+                [   
+                    "--",
                     "Working in same job",
+                    "Unable_to_track",
                     "Not_working_at_all",
                     "Working in different job",
                     "Confirmed Name But Didn't Share Any Information.",
@@ -554,7 +555,8 @@ def show_main_form():
 
             reason_leaving = st.selectbox(
                 "Reason",
-                [
+                [   
+                    "--",
                     "Distance Issue",
                     "Pursuing Higher Studies.",
                     "Job Profile Did Not Match",
@@ -583,7 +585,8 @@ def show_main_form():
 
             remarks = st.selectbox(
                 "Remarks",
-                [
+                [   
+                    "--",
                     "Did not respond to our call",
                     "Network issue",
                     "Not a student of Anudip",
