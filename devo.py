@@ -392,6 +392,8 @@ def show_login():
 # ============================================
 # MAIN VERIFICATION FORM UI
 # ============================================
+def show_main_form():
+
     # Load latest Test2 data
     try:
         test2_data = test2_sheet.get_all_records()
