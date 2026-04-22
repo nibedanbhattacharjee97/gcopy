@@ -602,6 +602,11 @@ def show_main_form():
                 ]
             )
 
+
+
+            remarks_1 = st.text_input("Remarks 1 (Optional)")
+
+
             st.markdown("</div>", unsafe_allow_html=True)
 
         submit_col1, = st.columns(1)
@@ -636,9 +641,6 @@ def show_main_form():
 
             sheet.append_row(data)
 
-            # Do not overwrite session with previous values here
-            # Instead show Create Another state
-            st.session_state.show_create_another = True
             st.success("✅ Data submitted!")
             st.rerun()
 
