@@ -522,7 +522,7 @@ def show_main_form():
             need_job = st.selectbox("Need Job", ["Yes", "No"])
             nps = st.slider("NPS", 0, 10, 5)
             verification_date = st.date_input("Verification Date", value=date.today())
-            remarks = st.text_area("Remarks",["Did not respond to our call","Network issue","Not a student of Anudip","Language issue","Switched off","Incoming Call Is Not Avialable","Wrong Number","Did_not_joined_job_due_to_personal_issue","Did_not_joined_job_due_to_profile_issue","Did not get any information from the employer","Did not get selected","Did Not Attend Any Interview"])
+            remarks = st.selectbox("Remarks",["Did not respond to our call","Network issue","Not a student of Anudip","Language issue","Switched off","Incoming Call Is Not Avialable","Wrong Number","Did_not_joined_job_due_to_personal_issue","Did_not_joined_job_due_to_profile_issue","Did not get any information from the employer","Did not get selected","Did Not Attend Any Interview"])
 
             st.markdown("</div>", unsafe_allow_html=True)
 
