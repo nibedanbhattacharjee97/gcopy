@@ -211,6 +211,7 @@ def clear_form_session():
     st.session_state.matched_source_note = ""
     st.session_state.nps_val = "--"
     st.session_state.show_create_another = False
+    st.session_state.remarks_1= ""
 
 def fetch_test2_match(test2_records, contact_number):
     """
@@ -575,7 +576,7 @@ def show_main_form():
                 ]
             )
 
-            need_job = st.selectbox("Need Job", ["Yes", "No"])
+            need_job = st.selectbox("Need Job", ["--","Yes", "No"])
 
             nps_options = ["--", 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
             default_nps_index = nps_options.index(st.session_state.nps_val) if st.session_state.nps_val in nps_options else 0
@@ -604,7 +605,10 @@ def show_main_form():
 
 
 
-            remarks_1 = st.text_input("Remarks 1 (Optional)")
+            remarks_1 = st.text_input(
+                "Remarks 1 (Optional)",
+                value=st.session_state.remarks_1
+            )
 
 
             st.markdown("</div>", unsafe_allow_html=True)
