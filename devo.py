@@ -603,13 +603,13 @@ def show_main_form():
                 ]
             )
 
-
-
             remarks_1 = st.text_input(
-                "Remarks 1 (Optional)",
+                "Remarks 1 (Additional Comments)",
                 value=st.session_state.remarks_1
             )
 
+            st.session_state.remarks_1 = remarks_1
+        
 
             st.markdown("</div>", unsafe_allow_html=True)
 
