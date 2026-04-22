@@ -640,7 +640,8 @@ def show_main_form():
                 need_job,
                 nps,
                 str(verification_date),
-                remarks
+                remarks,
+                remarks_1
             ]
 
             sheet.append_row(data)
