@@ -518,7 +518,7 @@ def show_main_form():
             st.markdown('<div class="section-card">', unsafe_allow_html=True)
             st.markdown('<div class="form-title">📝 Verification Feedback</div>', unsafe_allow_html=True)
 
-            reason_leaving = st.text_area("Reason")
+            reason_leaving = st.text_area("Reason",["Distance Issue","Pursuing Higher Studies.","Job Profile Did Not Match","Family Issue","Medical & Health Issue","Casually Left The Job.","Salary Issue","Heavy Workload","Unhealthy Work Environment.","Office Timing","Night Shift","Internship/Project Completed","Company Closed","Others…","Don't Want To Share"])
             need_job = st.selectbox("Need Job", ["Yes", "No"])
             nps = st.slider("NPS", 0, 10, 5)
             verification_date = st.date_input("Verification Date", value=date.today())
