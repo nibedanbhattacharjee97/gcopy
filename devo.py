@@ -227,7 +227,7 @@ def load_from_test2_to_session(test2_records, contact_number):
     if matched_row:
         st.session_state.cmisid_val = safe_str(matched_row.get("CMIS ID", ""))
         st.session_state.current_company_val = safe_str(matched_row.get("Company Name", ""))
-        st.session_state.current_salary_val = safe_str(matched_row.get("Salary", ""))
+        st.session_state.current_salary_val = safe_str(matched_row.get("salary", ""))
         st.session_state.current_designation_val = safe_str(matched_row.get("Deg", ""))
         st.session_state.doj_val = parse_doj(matched_row.get("DOJ", ""))
         st.session_state.match_found = True
