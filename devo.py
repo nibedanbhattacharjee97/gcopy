@@ -452,7 +452,7 @@ def show_main_form():
 
             student_touch = st.selectbox(
                 "Students Touch Method",
-                ["Call", "WhatsApp", "SMS", "Email", "Other"]
+                ["Tikona_Call", "SPOC_call"]
             )
 
             student_name = st.text_input(
