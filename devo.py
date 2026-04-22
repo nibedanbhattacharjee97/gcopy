@@ -483,7 +483,7 @@ def show_main_form():
 
             retention_status = st.selectbox(
                 "Retention Status",
-                ["Working", "Not Working", "Unknown"]
+                ["Unable_to_track", "Working in same job", "Not_working_at_all", "Working in different job","Confirmed Name But Didn't Share Any Information.","Left_The_Job","Not_joined_yet"]
             )
 
             months_working = st.number_input(
