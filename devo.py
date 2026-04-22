@@ -15,7 +15,7 @@ st.set_page_config(
 )
 
 # ============================================
-# 🌈 PAGE STYLE (UNCHANGED + FULL UI)
+# 🌈 PAGE STYLE
 # ============================================
 st.markdown("""
     <style>
@@ -106,11 +106,15 @@ st.markdown("""
             border-radius: 8px;
             margin-bottom: 10px;
         }
+
+        .create-another-space {
+            margin-top: 8px;
+        }
     </style>
 """, unsafe_allow_html=True)
 
 # ============================================
-# 🔐 PASSWORD UTILITIES (UNCHANGED)
+# 🔐 PASSWORD UTILITIES
 # ============================================
 def hash_password(password):
     return hashlib.sha256(str.encode(password)).hexdigest()
@@ -147,7 +151,7 @@ def parse_doj(raw_value):
     raw_value = safe_str(raw_value)
 
     if not raw_value:
-        return date.today()
+        return None
 
     formats = [
         "%Y-%m-%d",
@@ -160,13 +164,13 @@ def parse_doj(raw_value):
     for fmt in formats:
         try:
             return datetime.strptime(raw_value, fmt).date()
-        except:
+        except Exception:
             pass
 
     try:
         return datetime.fromisoformat(raw_value).date()
-    except:
-        return date.today()
+    except Exception:
+        return None
 
 def init_form_session():
     """
@@ -179,9 +183,11 @@ def init_form_session():
         "current_company_val": "",
         "current_salary_val": "",
         "current_designation_val": "",
-        "doj_val": date.today(),
+        "doj_val": None,
         "match_found": False,
-        "matched_source_note": ""
+        "matched_source_note": "",
+        "nps_val": "--",
+        "show_create_another": False
     }
 
     for key, val in defaults.items():
@@ -190,17 +196,21 @@ def init_form_session():
 
 def clear_form_session():
     """
-    Optional reset after submit
+    Reset the form to a fresh blank state for new entry
     """
     st.session_state.student_name_val = ""
     st.session_state.cmisid_val = ""
     st.session_state.contact_number_val = ""
+
     st.session_state.current_company_val = ""
     st.session_state.current_salary_val = ""
     st.session_state.current_designation_val = ""
-    st.session_state.doj_val = date.today()
+    st.session_state.doj_val = None
+
     st.session_state.match_found = False
     st.session_state.matched_source_note = ""
+    st.session_state.nps_val = "--"
+    st.session_state.show_create_another = False
 
 def fetch_test2_match(test2_records, contact_number):
     """
@@ -239,7 +249,7 @@ def load_from_test2_to_session(test2_records, contact_number):
         return False
 
 # ============================================
-# 🔐 GOOGLE AUTHENTICATION (KEEPING YOUR LOGIC)
+# 🔐 GOOGLE AUTHENTICATION
 # ============================================
 scope = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -394,6 +404,19 @@ def show_login():
 # ============================================
 def show_main_form():
 
+    # Create Another flow
+    if st.session_state.show_create_another:
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        st.markdown('<div class="form-title">✅ Submission Complete</div>', unsafe_allow_html=True)
+        st.success("✅ Data submitted successfully.")
+
+        if st.button("➕ Create Another"):
+            clear_form_session()
+            st.rerun()
+
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
     # Load latest Test2 data
     try:
         test2_data = test2_sheet.get_all_records()
@@ -483,7 +506,17 @@ def show_main_form():
 
             retention_status = st.selectbox(
                 "Retention Status",
-                ["Unable_to_track", "Working in same job", "Not_working_at_all", "Working in different job","Confirmed Name But Didn't Share Any Information.","Left_The_Job","Not_joined_yet","Hold","Rejected"]
+                [
+                    "Unable_to_track",
+                    "Working in same job",
+                    "Not_working_at_all",
+                    "Working in different job",
+                    "Confirmed Name But Didn't Share Any Information.",
+                    "Left_The_Job",
+                    "Not_joined_yet",
+                    "Hold",
+                    "Rejected"
+                ]
             )
 
             months_working = st.number_input(
@@ -493,7 +526,7 @@ def show_main_form():
             )
 
             current_company = st.text_input(
-                "Company",
+                "Company Name",
                 value=st.session_state.current_company_val
             )
 
@@ -503,13 +536,14 @@ def show_main_form():
             )
 
             current_designation = st.text_input(
-                "Designation",
+                "DEG",
                 value=st.session_state.current_designation_val
             )
 
+            doj_default_value = st.session_state.doj_val if st.session_state.doj_val is not None else date.today()
             doj = st.date_input(
                 "DOJ",
-                value=st.session_state.doj_val
+                value=doj_default_value
             )
 
             st.markdown("</div>", unsafe_allow_html=True)
@@ -518,23 +552,65 @@ def show_main_form():
             st.markdown('<div class="section-card">', unsafe_allow_html=True)
             st.markdown('<div class="form-title">📝 Verification Feedback</div>', unsafe_allow_html=True)
 
-            reason_leaving = st.selectbox("Reason",["Distance Issue","Pursuing Higher Studies.","Job Profile Did Not Match","Family Issue","Medical & Health Issue","Casually Left The Job.","Salary Issue","Heavy Workload","Unhealthy Work Environment.","Office Timing","Night Shift","Internship/Project Completed","Company Closed","Others…","Don't Want To Share"])
+            reason_leaving = st.selectbox(
+                "Reason",
+                [
+                    "Distance Issue",
+                    "Pursuing Higher Studies.",
+                    "Job Profile Did Not Match",
+                    "Family Issue",
+                    "Medical & Health Issue",
+                    "Casually Left The Job.",
+                    "Salary Issue",
+                    "Heavy Workload",
+                    "Unhealthy Work Environment.",
+                    "Office Timing",
+                    "Night Shift",
+                    "Internship/Project Completed",
+                    "Company Closed",
+                    "Others…",
+                    "Don't Want To Share"
+                ]
+            )
+
             need_job = st.selectbox("Need Job", ["Yes", "No"])
-            nps = st.slider("NPS", 0, 10, 5)
+
+            nps_options = ["--", 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+            default_nps_index = nps_options.index(st.session_state.nps_val) if st.session_state.nps_val in nps_options else 0
+            nps = st.selectbox("NPS", nps_options, index=default_nps_index)
+
             verification_date = st.date_input("Verification Date", value=date.today())
-            remarks = st.selectbox("Remarks",["Did not respond to our call","Network issue","Not a student of Anudip","Language issue","Switched off","Incoming Call Is Not Avialable","Wrong Number","Did_not_joined_job_due_to_personal_issue","Did_not_joined_job_due_to_profile_issue","Did not get any information from the employer","Did not get selected","Did Not Attend Any Interview"])
+
+            remarks = st.selectbox(
+                "Remarks",
+                [
+                    "Did not respond to our call",
+                    "Network issue",
+                    "Not a student of Anudip",
+                    "Language issue",
+                    "Switched off",
+                    "Incoming Call Is Not Avialable",
+                    "Wrong Number",
+                    "Did_not_joined_job_due_to_personal_issue",
+                    "Did_not_joined_job_due_to_profile_issue",
+                    "Did not get any information from the employer",
+                    "Did not get selected",
+                    "Did Not Attend Any Interview"
+                ]
+            )
 
             st.markdown("</div>", unsafe_allow_html=True)
 
         submit_col1, = st.columns(1)
-
         with submit_col1:
             submitted = st.form_submit_button("Submit Data ✅")
-
 
     # Submit logic
     if submitted:
         try:
+            # Save blank string instead of today's date when you want DOJ blank on new form.
+            doj_to_save = "" if st.session_state.doj_val is None and not current_company and not current_salary and not current_designation else str(doj)
+
             data = [
                 st.session_state.spoc_name,
                 student_touch,
@@ -547,7 +623,7 @@ def show_main_form():
                 current_company,
                 current_salary,
                 current_designation,
-                str(doj),
+                doj_to_save,
                 reason_leaving,
                 need_job,
                 nps,
@@ -556,16 +632,12 @@ def show_main_form():
             ]
 
             sheet.append_row(data)
-            st.success("✅ Data submitted!")
 
-            # Keep last typed values if needed, or clear selected fields
-            st.session_state.student_name_val = student_name
-            st.session_state.cmisid_val = cmisid
-            st.session_state.contact_number_val = contact_number
-            st.session_state.current_company_val = current_company
-            st.session_state.current_salary_val = current_salary
-            st.session_state.current_designation_val = current_designation
-            st.session_state.doj_val = doj
+            # Do not overwrite session with previous values here
+            # Instead show Create Another state
+            st.session_state.show_create_another = True
+            st.success("✅ Data submitted!")
+            st.rerun()
 
         except Exception as e:
             st.error("❌ Failed to submit data")
