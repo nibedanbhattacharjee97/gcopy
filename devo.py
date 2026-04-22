@@ -392,10 +392,6 @@ def show_login():
 # ============================================
 # MAIN VERIFICATION FORM UI
 # ============================================
-def show_main_form():
-    st.title("📋 Student Verification Entry Form")
-    st.markdown("---")
-
     # Load latest Test2 data
     try:
         test2_data = test2_sheet.get_all_records()
