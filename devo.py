@@ -4,7 +4,7 @@ from google.oauth2.service_account import Credentials
 from datetime import date, datetime
 import hashlib
 import os
-import time  # <--- THIS WAS MISSING AND IS NOW ADDED
+import time
 
 # ============================================
 # ⚙️ PAGE CONFIG & PERFORMANCE SETUP
@@ -31,7 +31,6 @@ st.markdown("""
             box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin-bottom: 1rem;
         }
         .form-title { color: #1a73e8; font-weight: 700; font-size: 1.2rem; margin-bottom: 1rem; }
-        .login-box { max-width: 400px; margin: auto; background: white; padding: 2rem; border-radius: 15px; }
         .footer { text-align: center; color: #888; font-size: 0.8rem; margin-top: 3rem; }
     </style>
 """, unsafe_allow_html=True)
@@ -58,18 +57,16 @@ def get_sheets_connection():
 
 sheets = get_sheets_connection()
 
-# SPEED BOOSTER: Cache lookup data for 10 minutes
 @st.cache_data(ttl=600)
 def fetch_all_lookup_data():
     return sheets["lookup"].get_all_records()
 
-# SPEED BOOSTER: Cache auth data for 5 minutes
 @st.cache_data(ttl=300)
 def fetch_auth_data():
     return sheets["auth"].get_all_records()
 
 # ============================================
-# 📊 LOGIC MAPPING (DEPENDENT DROPDOWNS FROM PIC)
+# 📊 LOGIC MAPPING
 # ============================================
 RETENTION_MAP = {
     "Yes": ["Working in same job", "Working in different job", "Disconnected,Did'nt Share All Info.", "Not_Joined_Yet", "Confirmed Name - No Info.", "Not_working_at_all", "Left The Job", "Language Issue", "Not a student"],
@@ -86,12 +83,24 @@ REMARKS_MAP = {
 }
 
 # ============================================
-# 🔑 SESSION STATES
+# 🔑 SESSION STATES & UTILITIES
 # ============================================
 if "logged_in" not in st.session_state: st.session_state.logged_in = False
 if "user" not in st.session_state: st.session_state.user = ""
+
+def reset_form_fields(preserve_student=False):
+    """Clears placement data. If preserve_student is True, keeps Name, CMIS, Phone."""
+    if not preserve_student:
+        st.session_state.form_vals = {"name": "", "cmis": "", "comp": "", "sal": "", "deg": "", "phone": ""}
+    else:
+        # Keep the student identity but clear the job details
+        st.session_state.form_vals["comp"] = ""
+        st.session_state.form_vals["sal"] = ""
+        st.session_state.form_vals["deg"] = ""
+        # DOJ is handled by the widget default
+
 if "form_vals" not in st.session_state: 
-    st.session_state.form_vals = {"name": "", "cmis": "", "comp": "", "sal": "", "deg": "", "phone": ""}
+    reset_form_fields(preserve_student=False)
 
 # ============================================
 # 🚪 AUTHENTICATION UI
@@ -101,7 +110,6 @@ if not st.session_state.logged_in:
     cols = st.columns([1, 2, 1])
     with cols[1]:
         tab_log, tab_reg = st.tabs(["🔐 Login", "🆕 Register"])
-        
         with tab_log:
             u = st.text_input("SPOC Name")
             p = st.text_input("Password", type="password")
@@ -113,7 +121,6 @@ if not st.session_state.logged_in:
                     st.session_state.user = u
                     st.rerun()
                 else: st.error("Invalid Username/Password")
-        
         with tab_reg:
             nu = st.text_input("New SPOC Name")
             np = st.text_input("New Password", type="password")
@@ -133,10 +140,11 @@ else:
         st.session_state.logged_in = False
         st.rerun()
 
-    # SECTION 1: SEARCH (FAST LOOKUP)
+    # SECTION 1: SEARCH
     st.markdown('<div class="section-card"><div class="form-title">🔍 Quick Student Lookup</div>', unsafe_allow_html=True)
-    c1, c2, c3 = st.columns([3, 1, 1])
+    c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
     search_q = c1.text_input("Enter Contact Number", placeholder="E.g. 9876543210")
+    
     if c2.button("⚡ Fetch Details", use_container_width=True):
         data = fetch_all_lookup_data()
         match = next((r for r in data if str(r.get("Contact Number")) == search_q or str(r.get("Contact Number")).endswith(search_q[-10:])), None)
@@ -150,13 +158,20 @@ else:
                 "phone": search_q
             }
             st.toast("Record Found!", icon="✅")
+            st.rerun()
         else: st.toast("Not Found", icon="⚠️")
-    if c3.button("🔄 Refresh DB", use_container_width=True):
+
+    if c3.button("🧹 Clear Placement Data", use_container_width=True):
+        # Keeps Student Info, removes Job Info
+        reset_form_fields(preserve_student=True)
+        st.rerun()
+
+    if c4.button("🔄 Refresh DB", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 
-    # SECTION 2: THE FORM (DEPENDENT LOGIC)
+    # SECTION 2: THE FORM
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.markdown('<div class="form-title">📝 Student Verification Form</div>', unsafe_allow_html=True)
     
@@ -167,26 +182,37 @@ else:
         f_name = st.text_input("Name", value=st.session_state.form_vals["name"])
         f_cmis = st.text_input("CMIS ID", value=st.session_state.form_vals["cmis"])
         f_phone = st.text_input("Contact", value=st.session_state.form_vals["phone"])
-        f_contactable = st.selectbox("Contactable", ["--", "Yes", "No"])
+        f_contactable = st.selectbox("Contactable", ["Yes", "No"])
 
     with col2:
-        # Dependent Level 1
         ret_opts = RETENTION_MAP.get(f_contactable, ["--"])
         f_retention = st.selectbox("Retention Status", ret_opts)
         
+        # ⚡ SELECTIVE CLEARING BASED ON STATUS
+        # If student is NOT working or untraceable, clear the job fields automatically
+        if f_retention in ["Working in different job", "Not_working_at_all", "Unable_to_track", "Left The Job"]:
+             disp_comp = ""
+             disp_sal = ""
+             disp_deg = ""
+        else:
+             disp_comp = st.session_state.form_vals["comp"]
+             disp_sal = st.session_state.form_vals["sal"]
+             disp_deg = st.session_state.form_vals["deg"]
+
         f_months = st.number_input("Months Working", min_value=0)
-        f_comp = st.text_input("Company", value=st.session_state.form_vals["comp"])
-        f_sal = st.text_input("Salary", value=st.session_state.form_vals["sal"])
-        f_deg = st.text_input("DEG", value=st.session_state.form_vals["deg"])
+        f_comp = st.text_input("Company", value=disp_comp)
+        f_sal = st.text_input("Salary", value=disp_sal)
+        f_deg = st.text_input("DEG", value=disp_deg)
 
     with col3:
-        # Dependent Level 2
-        # Logic to pick correct remarks based on retention status selected
         rem_opts = REMARKS_MAP.get(f_retention, ["--"])
         f_remarks = st.selectbox("Remarks", rem_opts)
         
-        f_doj = st.date_input("DOJ", value=date.today())
-        f_reason = st.selectbox("Reason Leaving", ["--", "Salary Issue", "Distance Issue", "Family Issue", "Medical & Health Issue", "Pursuing Higher Studies.", "Others..."])
+        # If DOJ needs to be cleared (reset to today) on certain statuses:
+        default_doj = date.today()
+        f_doj = st.date_input("DOJ", value=default_doj)
+        
+        f_reason = st.text_input("Remarks_Own", value="")
         f_nps = st.selectbox("NPS Score", ["--"] + list(range(11)))
         f_vdate = st.date_input("Verification Date", value=date.today())
 
@@ -195,7 +221,7 @@ else:
     # SUBMIT
     if st.button("🚀 SUBMIT VERIFICATION", use_container_width=True):
         if f_name and f_cmis:
-            with st.spinner("Saving to Google Sheets..."):
+            with st.spinner("Saving..."):
                 try:
                     payload = [
                         st.session_state.user, f_touch, f_name, f_cmis, f_phone,
@@ -203,10 +229,10 @@ else:
                         f_deg, str(f_doj), f_reason, "No", str(f_nps), str(f_vdate), f_remarks
                     ]
                     sheets["master"].append_row(payload)
-                    st.success("Record Saved Successfully!")
-                    # Clear session values
-                    st.session_state.form_vals = {"name": "", "cmis": "", "comp": "", "sal": "", "deg": "", "phone": ""}
-                    time.sleep(1) # This is why we need 'import time'
+                    st.success("Record Saved!")
+                    # Full clear after successful submission to prepare for next student
+                    reset_form_fields(preserve_student=False)
+                    time.sleep(1)
                     st.rerun()
                 except Exception as e: st.error(f"Error: {e}")
         else: st.warning("Name and CMIS ID are mandatory!")
