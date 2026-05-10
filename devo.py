@@ -91,13 +91,15 @@ if "user" not in st.session_state: st.session_state.user = ""
 def reset_form_fields(preserve_student=False):
     """Clears placement data. If preserve_student is True, keeps Name, CMIS, Phone."""
     if not preserve_student:
-        st.session_state.form_vals = {"name": "", "cmis": "", "comp": "", "sal": "", "deg": "", "phone": ""}
+        st.session_state.form_vals = {
+            "name": "", "cmis": "", "comp": "", "sal": "", 
+            "deg": "", "phone": "", "doj": date.today()
+        }
     else:
-        # Keep the student identity but clear the job details
         st.session_state.form_vals["comp"] = ""
         st.session_state.form_vals["sal"] = ""
         st.session_state.form_vals["deg"] = ""
-        # DOJ is handled by the widget default
+        st.session_state.form_vals["doj"] = date.today()
 
 if "form_vals" not in st.session_state: 
     reset_form_fields(preserve_student=False)
@@ -143,26 +145,40 @@ else:
     # SECTION 1: SEARCH
     st.markdown('<div class="section-card"><div class="form-title">🔍 Quick Student Lookup</div>', unsafe_allow_html=True)
     c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
-    search_q = c1.text_input("Enter Contact Number", placeholder="E.g. 9876543210")
+    search_q = c1.text_input("Enter Phone or Student Name", placeholder="E.g. 9876543210 or Rahul Kumar")
     
     if c2.button("⚡ Fetch Details", use_container_width=True):
         data = fetch_all_lookup_data()
-        match = next((r for r in data if str(r.get("Contact Number")) == search_q or str(r.get("Contact Number")).endswith(search_q[-10:])), None)
+        query = search_q.strip().lower()
+        
+        # Match against Contact Number (full or last 10) OR Student Name
+        match = next((r for r in data if 
+                      query in str(r.get("Contact Number", "")).lower() or 
+                      str(r.get("Contact Number", "")).endswith(query[-10:]) or
+                      query in str(r.get("student_name", "")).lower()), None)
+        
         if match:
+            # Safely handle DOJ parsing from sheet
+            raw_doj = match.get("DOJ", "")
+            try:
+                parsed_doj = datetime.strptime(str(raw_doj), "%Y-%m-%d").date() if raw_doj else date.today()
+            except:
+                parsed_doj = date.today()
+
             st.session_state.form_vals = {
-                "name": str(match.get("Student Name", "")),
+                "name": str(match.get("student_name", "")), # Updated to student_name
                 "cmis": str(match.get("CMIS ID", "")),
                 "comp": str(match.get("Company Name", "")),
                 "sal": str(match.get("salary", "")),
                 "deg": str(match.get("Deg", "")),
-                "phone": search_q
+                "phone": str(match.get("Contact Number", "")),
+                "doj": parsed_doj
             }
             st.toast("Record Found!", icon="✅")
             st.rerun()
         else: st.toast("Not Found", icon="⚠️")
 
     if c3.button("🧹 Clear Placement Data", use_container_width=True):
-        # Keeps Student Info, removes Job Info
         reset_form_fields(preserve_student=True)
         st.rerun()
 
@@ -189,15 +205,16 @@ else:
         f_retention = st.selectbox("Retention Status", ret_opts)
         
         # ⚡ SELECTIVE CLEARING BASED ON STATUS
-        # If student is NOT working or untraceable, clear the job fields automatically
         if f_retention in ["Working in different job", "Not_working_at_all", "Unable_to_track", "Left The Job"]:
              disp_comp = ""
              disp_sal = ""
              disp_deg = ""
+             disp_doj = date.today()
         else:
              disp_comp = st.session_state.form_vals["comp"]
              disp_sal = st.session_state.form_vals["sal"]
              disp_deg = st.session_state.form_vals["deg"]
+             disp_doj = st.session_state.form_vals.get("doj", date.today())
 
         f_months = st.number_input("Months Working", min_value=0)
         f_comp = st.text_input("Company", value=disp_comp)
@@ -207,11 +224,7 @@ else:
     with col3:
         rem_opts = REMARKS_MAP.get(f_retention, ["--"])
         f_remarks = st.selectbox("Remarks", rem_opts)
-        
-        # If DOJ needs to be cleared (reset to today) on certain statuses:
-        default_doj = date.today()
-        f_doj = st.date_input("DOJ", value=default_doj)
-        
+        f_doj = st.date_input("DOJ", value=disp_doj)
         f_reason = st.text_input("Remarks_Own", value="")
         f_nps = st.selectbox("NPS Score", ["--"] + list(range(11)))
         f_vdate = st.date_input("Verification Date", value=date.today())
@@ -230,7 +243,6 @@ else:
                     ]
                     sheets["master"].append_row(payload)
                     st.success("Record Saved!")
-                    # Full clear after successful submission to prepare for next student
                     reset_form_fields(preserve_student=False)
                     time.sleep(1)
                     st.rerun()
