@@ -69,7 +69,7 @@ def fetch_auth_data():
 # 📊 LOGIC MAPPING
 # ============================================
 RETENTION_MAP = {
-    "Yes": ["Working in same job", "Working in different job", "Disconnected,Did'nt Share All Info.", "Not_Joined_Yet", "Confirmed Name - No Info.", "Not_working_at_all", "Left The Job", "Language Issue", "Not a student"],
+    "Yes": ["Working in same job", "Working in different job", "Disconnected,Did'nt Share All Info.", "Not_Joined_Yet", "Confirmed Name - No Info.", "Not_working_at_all", "Left The Job", "Language Issue", "Not a student","Hold","Rejected"],
     "No": ["Unable_to_track"],
     "--": ["--"]
 }
