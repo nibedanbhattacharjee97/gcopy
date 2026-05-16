@@ -205,7 +205,7 @@ else:
         st.rerun()
 
     # SECTION 1: QUEUE CONTROLS
-    st.markdown('<div class="section-card"><div class="form-title">🔍 Allocated Student Queue Navigator</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-card"><div class="form-title">🔍 Automated Student Queue Tracker</div>', unsafe_allow_html=True)
     
     if total_assigned > 0 and current_idx < total_assigned:
         current_allocated_phone = st.session_state.allocated_numbers[current_idx]
@@ -213,41 +213,23 @@ else:
     elif total_assigned > 0 and current_idx >= total_assigned:
         st.markdown('<div class="queue-box" style="background: #e6f4ea; border-left-color: #34a853;">✅ Verification Queue Fully Completed!</div>', unsafe_allow_html=True)
 
-    c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
-    search_q = c1.text_input("Jump directly to specific number (Optional)", placeholder="Leave blank to use sequential automation queue")
+    c1, c2, c3 = st.columns([2, 1, 1])
     
-    if c2.button("⚡ Fetch Details", use_container_width=True):
-        query = search_q.strip()
-        if query:
-            match_found = False
-            for idx, num in enumerate(st.session_state.allocated_numbers):
-                if query in num or num.endswith(query[-10:]):
-                    st.session_state.queue_index = idx
-                    load_student_by_phone(num)
-                    match_found = True
-                    break
-            
-            if match_found:
-                st.toast("Allocated Record Loaded!", icon="✅")
-                st.rerun()
-            else:
-                st.error("Access Denied: This number is not allocated to your profile.")
-        else:
-            # ⚡ NO COPY PASTE REQUIRED HERE anymore! 
-            # If search bar is blank, hitting Fetch Details automatically grabs the active queue number
-            if total_assigned > 0 and current_idx < total_assigned:
-                load_student_by_phone(st.session_state.allocated_numbers[current_idx])
-                st.toast("Current Allocated Target Details Fetched!", icon="⚡")
-                st.rerun()
+    # Simple explicit load button to automatically pull master data on demand
+    if c1.button("📥 Load Current Allocated Number Details", use_container_width=True):
+        if total_assigned > 0 and current_idx < total_assigned:
+            load_student_by_phone(st.session_state.allocated_numbers[current_idx])
+            st.toast("Current Target Details Fetched From Test2!", icon="⚡")
+            st.rerun()
 
-    if c3.button("🧹 Clear Placement Data", use_container_width=True):
+    if c2.button("🧹 Clear Placement Data", use_container_width=True):
         st.session_state.form_initials["comp"] = ""
         st.session_state.form_initials["sal"] = ""
         st.session_state.form_initials["deg"] = ""
         st.session_state.form_initials["doj"] = date.today()
         st.rerun()
 
-    if c4.button("🔄 Refresh DB", use_container_width=True):
+    if c3.button("🔄 Refresh DB", use_container_width=True):
         st.cache_data.clear()
         alloc_data = fetch_allocation_data()
         st.session_state.allocated_numbers = [
@@ -305,7 +287,7 @@ else:
     # SUBMIT
     if st.button("🚀 SUBMIT VERIFICATION", use_container_width=True):
         if f_name and f_cmis:
-            with st.spinner("Saving current record and shifting queue..."):
+            with st.spinner("Saving current record and moving to next allocated item..."):
                 try:
                     payload = [
                         st.session_state.user, f_touch, f_name, f_cmis, f_phone,
@@ -315,12 +297,12 @@ else:
                     sheets["master"].append_row(payload)
                     st.success("Record Saved!")
                     
-                    # Core automation: move index forward immediately
+                    # Core automation step: Advance to next index
                     st.session_state.queue_index += 1
                     
                     if st.session_state.queue_index < len(st.session_state.allocated_numbers):
                         next_phone = st.session_state.allocated_numbers[st.session_state.queue_index]
-                        # Dynamically fetch Test2 details for the next entry down without intermediate steps
+                        # Fetch Test2 row details instantly for the next target
                         load_student_by_phone(next_phone)
                     else:
                         st.session_state.form_initials = {
