@@ -32,6 +32,7 @@ st.markdown("""
         }
         .form-title { color: #1a73e8; font-weight: 700; font-size: 1.2rem; margin-bottom: 1rem; }
         .footer { text-align: center; color: #888; font-size: 0.8rem; margin-top: 3rem; }
+        .queue-box { background: #e8f0fe; padding: 0.75rem; border-radius: 8px; border-left: 5px solid #1a73e8; font-weight: 600; margin-bottom: 1rem; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -52,7 +53,8 @@ def get_sheets_connection():
     return {
         "master": gc.open("Test").sheet1,
         "auth": gc.open("Test_Spoc_PassWord").sheet1,
-        "lookup": gc.open("Test2").sheet1
+        "lookup": gc.open("Test2").sheet1,
+        "allocation": gc.open("Test3").sheet1 
     }
 
 sheets = get_sheets_connection()
@@ -64,6 +66,10 @@ def fetch_all_lookup_data():
 @st.cache_data(ttl=300)
 def fetch_auth_data():
     return sheets["auth"].get_all_records()
+
+@st.cache_data(ttl=300)
+def fetch_allocation_data():
+    return sheets["allocation"].get_all_records()
 
 # ============================================
 # 📊 LOGIC MAPPING
@@ -87,22 +93,51 @@ REMARKS_MAP = {
 # ============================================
 if "logged_in" not in st.session_state: st.session_state.logged_in = False
 if "user" not in st.session_state: st.session_state.user = ""
+if "allocated_numbers" not in st.session_state: st.session_state.allocated_numbers = []
+if "queue_index" not in st.session_state: st.session_state.queue_index = 0
 
-def reset_form_fields(preserve_student=False):
-    """Clears placement data. If preserve_student is True, keeps Name, CMIS, Phone."""
-    if not preserve_student:
-        st.session_state.form_vals = {
-            "name": "", "cmis": "", "comp": "", "sal": "", 
-            "deg": "", "phone": "", "doj": date.today()
+# Persistent dictionary for holding baseline form field values safely
+if "form_initials" not in st.session_state:
+    st.session_state.form_initials = {
+        "name": "", "cmis": "", "comp": "", "sal": "", "deg": "", "phone": "", "doj": date.today()
+    }
+
+def load_student_by_phone(phone_target):
+    """Searches lookup data from Test2 and stores them cleanly without widget key conflicts"""
+    data = fetch_all_lookup_data()
+    target_clean = str(phone_target).strip()
+    if not target_clean:
+        return False
+        
+    match = None
+    for r in data:
+        sheet_phone = str(r.get("Contact Number", "")).strip()
+        if target_clean in sheet_phone or sheet_phone.endswith(target_clean[-10:]):
+            match = r
+            break
+            
+    if match:
+        raw_doj = match.get("DOJ", "")
+        try:
+            parsed_doj = datetime.strptime(str(raw_doj).strip(), "%Y-%m-%d").date() if raw_doj else date.today()
+        except:
+            parsed_doj = date.today()
+
+        st.session_state.form_initials = {
+            "name": str(match.get("student_name", "")).strip(),
+            "cmis": str(match.get("CMIS ID", "")).strip(),
+            "comp": str(match.get("Company Name", "")).strip(),
+            "sal": str(match.get("salary", "")).strip(),
+            "deg": str(match.get("Deg", "")).strip(),
+            "phone": str(match.get("Contact Number", "")).strip(),
+            "doj": parsed_doj
         }
+        return True
     else:
-        st.session_state.form_vals["comp"] = ""
-        st.session_state.form_vals["sal"] = ""
-        st.session_state.form_vals["deg"] = ""
-        st.session_state.form_vals["doj"] = date.today()
-
-if "form_vals" not in st.session_state: 
-    reset_form_fields(preserve_student=False)
+        st.session_state.form_initials = {
+            "name": "", "cmis": "", "comp": "", "sal": "", "deg": "", "phone": target_clean, "doj": date.today()
+        }
+        return False
 
 # ============================================
 # 🚪 AUTHENTICATION UI
@@ -117,10 +152,22 @@ if not st.session_state.logged_in:
             p = st.text_input("Password", type="password")
             if st.button("Access System", use_container_width=True):
                 auth_recs = fetch_auth_data()
-                match = next((r for r in auth_recs if str(r.get("spoc_name")) == u), None)
+                match = next((r for r in auth_recs if str(r.get("spoc_name")).strip() == u.strip()), None)
                 if match and match.get("password") == hash_password(p):
                     st.session_state.logged_in = True
-                    st.session_state.user = u
+                    st.session_state.user = u.strip()
+                    
+                    alloc_data = fetch_allocation_data()
+                    spoc_numbers = [
+                        str(r.get("phone_number")).strip() for r in alloc_data 
+                        if str(r.get("SPOC_Name")).strip().lower() == u.strip().lower() and r.get("phone_number")
+                    ]
+                    st.session_state.allocated_numbers = spoc_numbers
+                    st.session_state.queue_index = 0
+                    
+                    if spoc_numbers:
+                        load_student_by_phone(spoc_numbers[0])
+                        
                     st.rerun()
                 else: st.error("Invalid Username/Password")
         with tab_reg:
@@ -128,7 +175,7 @@ if not st.session_state.logged_in:
             np = st.text_input("New Password", type="password")
             if st.button("Create Account", use_container_width=True):
                 if nu and np:
-                    sheets["auth"].append_row([nu, hash_password(np), datetime.now().strftime("%Y-%m-%d")])
+                    sheets["auth"].append_row([nu.strip(), hash_password(np), datetime.now().strftime("%Y-%m-%d")])
                     st.cache_data.clear() 
                     st.success("Registered! Go to Login tab.")
                 else: st.warning("Fill all fields")
@@ -138,52 +185,75 @@ if not st.session_state.logged_in:
 # ============================================
 else:
     st.sidebar.subheader(f"👤 {st.session_state.user}")
+    
+    total_assigned = len(st.session_state.allocated_numbers)
+    current_idx = st.session_state.queue_index
+    
+    st.sidebar.markdown("---")
+    st.sidebar.markdown(f"### 📋 Allocation Status")
+    st.sidebar.metric(label="Total Assigned Numbers", value=total_assigned)
+    if total_assigned > 0:
+        progress_val = min(current_idx / total_assigned, 1.0)
+        st.sidebar.progress(progress_val)
+        st.sidebar.write(f"Processing item **{min(current_idx + 1, total_assigned)}** of **{total_assigned}**")
+    else:
+        st.sidebar.warning("No numbers allocated to you in Test3.")
+
     if st.sidebar.button("🔴 Logout", use_container_width=True):
         st.session_state.logged_in = False
+        st.session_state.allocated_numbers = []
+        st.session_state.queue_index = 0
         st.rerun()
 
-    # SECTION 1: SEARCH
-    st.markdown('<div class="section-card"><div class="form-title">🔍 Quick Student Lookup</div>', unsafe_allow_html=True)
+    # SECTION 1: QUEUE CONTROLS
+    st.markdown('<div class="section-card"><div class="form-title">🔍 Allocated Student Queue Navigator</div>', unsafe_allow_html=True)
+    
+    if total_assigned > 0 and current_idx < total_assigned:
+        current_allocated_phone = st.session_state.allocated_numbers[current_idx]
+        st.markdown(f'<div class="queue-box">🎯 Active Queue Target: {current_allocated_phone} ({current_idx + 1}/{total_assigned})</div>', unsafe_allow_html=True)
+    elif total_assigned > 0 and current_idx >= total_assigned:
+        st.markdown('<div class="queue-box" style="background: #e6f4ea; border-left-color: #34a853;">✅ Verification Queue Fully Completed!</div>', unsafe_allow_html=True)
+
     c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
-    search_q = c1.text_input("Enter Phone or Student Name", placeholder="E.g. 9876543210 or Rahul Kumar")
+    search_q = c1.text_input("Manual Filter inside your Allocation", placeholder="Type assigned phone number to jump directly")
     
     if c2.button("⚡ Fetch Details", use_container_width=True):
-        data = fetch_all_lookup_data()
-        query = search_q.strip().lower()
-        
-        # Match against Contact Number (full or last 10) OR Student Name
-        match = next((r for r in data if 
-                      query in str(r.get("Contact Number", "")).lower() or 
-                      str(r.get("Contact Number", "")).endswith(query[-10:]) or
-                      query in str(r.get("student_name", "")).lower()), None)
-        
-        if match:
-            # Safely handle DOJ parsing from sheet
-            raw_doj = match.get("DOJ", "")
-            try:
-                parsed_doj = datetime.strptime(str(raw_doj), "%Y-%m-%d").date() if raw_doj else date.today()
-            except:
-                parsed_doj = date.today()
-
-            st.session_state.form_vals = {
-                "name": str(match.get("student_name", "")), # Updated to student_name
-                "cmis": str(match.get("CMIS ID", "")),
-                "comp": str(match.get("Company Name", "")),
-                "sal": str(match.get("salary", "")),
-                "deg": str(match.get("Deg", "")),
-                "phone": str(match.get("Contact Number", "")),
-                "doj": parsed_doj
-            }
-            st.toast("Record Found!", icon="✅")
-            st.rerun()
-        else: st.toast("Not Found", icon="⚠️")
+        query = search_q.strip()
+        if query:
+            match_found = False
+            for idx, num in enumerate(st.session_state.allocated_numbers):
+                if query in num or num.endswith(query[-10:]):
+                    st.session_state.queue_index = idx
+                    load_student_by_phone(num)
+                    match_found = True
+                    break
+            
+            if match_found:
+                st.toast("Allocated Record Loaded!", icon="✅")
+                st.rerun()
+            else:
+                st.error("Access Denied: This number is not allocated to your profile.")
+        else:
+            if total_assigned > 0 and current_idx < total_assigned:
+                load_student_by_phone(st.session_state.allocated_numbers[current_idx])
+                st.rerun()
 
     if c3.button("🧹 Clear Placement Data", use_container_width=True):
-        reset_form_fields(preserve_student=True)
+        st.session_state.form_initials["comp"] = ""
+        st.session_state.form_initials["sal"] = ""
+        st.session_state.form_initials["deg"] = ""
+        st.session_state.form_initials["doj"] = date.today()
         st.rerun()
 
     if c4.button("🔄 Refresh DB", use_container_width=True):
         st.cache_data.clear()
+        alloc_data = fetch_allocation_data()
+        st.session_state.allocated_numbers = [
+            str(r.get("phone_number")).strip() for r in alloc_data 
+            if str(r.get("SPOC_Name")).strip().lower() == st.session_state.user.strip().lower() and r.get("phone_number")
+        ]
+        if st.session_state.allocated_numbers and st.session_state.queue_index < len(st.session_state.allocated_numbers):
+            load_student_by_phone(st.session_state.allocated_numbers[st.session_state.queue_index])
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -195,26 +265,26 @@ else:
     
     with col1:
         f_touch = st.selectbox("Touch Method", ["Tikona_Call", "SPOC_call"])
-        f_name = st.text_input("Name", value=st.session_state.form_vals["name"])
-        f_cmis = st.text_input("CMIS ID", value=st.session_state.form_vals["cmis"])
-        f_phone = st.text_input("Contact", value=st.session_state.form_vals["phone"])
+        f_name = st.text_input("Name", value=st.session_state.form_initials["name"])
+        f_cmis = st.text_input("CMIS ID", value=st.session_state.form_initials["cmis"])
+        f_phone = st.text_input("Contact", value=st.session_state.form_initials["phone"])
         f_contactable = st.selectbox("Contactable", ["Yes", "No"])
 
     with col2:
         ret_opts = RETENTION_MAP.get(f_contactable, ["--"])
         f_retention = st.selectbox("Retention Status", ret_opts)
         
-        # ⚡ SELECTIVE CLEARING BASED ON STATUS
+        # Safe evaluation handling based on selection properties
         if f_retention in ["Working in different job", "Not_working_at_all", "Unable_to_track", "Left The Job"]:
              disp_comp = ""
              disp_sal = ""
              disp_deg = ""
              disp_doj = date.today()
         else:
-             disp_comp = st.session_state.form_vals["comp"]
-             disp_sal = st.session_state.form_vals["sal"]
-             disp_deg = st.session_state.form_vals["deg"]
-             disp_doj = st.session_state.form_vals.get("doj", date.today())
+             disp_comp = st.session_state.form_initials["comp"]
+             disp_sal = st.session_state.form_initials["sal"]
+             disp_deg = st.session_state.form_initials["deg"]
+             disp_doj = st.session_state.form_initials["doj"]
 
         f_months = st.number_input("Months Working", min_value=0)
         f_comp = st.text_input("Company", value=disp_comp)
@@ -234,7 +304,7 @@ else:
     # SUBMIT
     if st.button("🚀 SUBMIT VERIFICATION", use_container_width=True):
         if f_name and f_cmis:
-            with st.spinner("Saving..."):
+            with st.spinner("Saving current record and shifting queue..."):
                 try:
                     payload = [
                         st.session_state.user, f_touch, f_name, f_cmis, f_phone,
@@ -243,10 +313,21 @@ else:
                     ]
                     sheets["master"].append_row(payload)
                     st.success("Record Saved!")
-                    reset_form_fields(preserve_student=False)
-                    time.sleep(1)
+                    
+                    st.session_state.queue_index += 1
+                    
+                    if st.session_state.queue_index < len(st.session_state.allocated_numbers):
+                        next_phone = st.session_state.allocated_numbers[st.session_state.queue_index]
+                        load_student_by_phone(next_phone)
+                    else:
+                        st.session_state.form_initials = {
+                            "name": "", "cmis": "", "comp": "", "sal": "", "deg": "", "phone": "", "doj": date.today()
+                        }
+                        st.balloons()
+                    
+                    time.sleep(0.5)
                     st.rerun()
-                except Exception as e: st.error(f"Error: {e}")
-        else: st.warning("Name and CMIS ID are mandatory!")
+                except Exception as e: st.error(f"Error handling save operations: {e}")
+        else: st.warning("Name and CMIS ID are mandatory fields!")
 
 st.markdown('<div class="footer">© 2026 Anudip Foundation | High Speed Verification System v4.0</div>', unsafe_allow_html=True)
