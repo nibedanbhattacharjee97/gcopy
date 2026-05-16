@@ -96,7 +96,6 @@ if "user" not in st.session_state: st.session_state.user = ""
 if "allocated_numbers" not in st.session_state: st.session_state.allocated_numbers = []
 if "queue_index" not in st.session_state: st.session_state.queue_index = 0
 
-# Persistent dictionary for holding baseline form field values safely
 if "form_initials" not in st.session_state:
     st.session_state.form_initials = {
         "name": "", "cmis": "", "comp": "", "sal": "", "deg": "", "phone": "", "doj": date.today()
@@ -215,7 +214,7 @@ else:
         st.markdown('<div class="queue-box" style="background: #e6f4ea; border-left-color: #34a853;">✅ Verification Queue Fully Completed!</div>', unsafe_allow_html=True)
 
     c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
-    search_q = c1.text_input("Manual Filter inside your Allocation", placeholder="Type assigned phone number to jump directly")
+    search_q = c1.text_input("Jump directly to specific number (Optional)", placeholder="Leave blank to use sequential automation queue")
     
     if c2.button("⚡ Fetch Details", use_container_width=True):
         query = search_q.strip()
@@ -234,8 +233,11 @@ else:
             else:
                 st.error("Access Denied: This number is not allocated to your profile.")
         else:
+            # ⚡ NO COPY PASTE REQUIRED HERE anymore! 
+            # If search bar is blank, hitting Fetch Details automatically grabs the active queue number
             if total_assigned > 0 and current_idx < total_assigned:
                 load_student_by_phone(st.session_state.allocated_numbers[current_idx])
+                st.toast("Current Allocated Target Details Fetched!", icon="⚡")
                 st.rerun()
 
     if c3.button("🧹 Clear Placement Data", use_container_width=True):
@@ -274,7 +276,6 @@ else:
         ret_opts = RETENTION_MAP.get(f_contactable, ["--"])
         f_retention = st.selectbox("Retention Status", ret_opts)
         
-        # Safe evaluation handling based on selection properties
         if f_retention in ["Working in different job", "Not_working_at_all", "Unable_to_track", "Left The Job"]:
              disp_comp = ""
              disp_sal = ""
@@ -314,10 +315,12 @@ else:
                     sheets["master"].append_row(payload)
                     st.success("Record Saved!")
                     
+                    # Core automation: move index forward immediately
                     st.session_state.queue_index += 1
                     
                     if st.session_state.queue_index < len(st.session_state.allocated_numbers):
                         next_phone = st.session_state.allocated_numbers[st.session_state.queue_index]
+                        # Dynamically fetch Test2 details for the next entry down without intermediate steps
                         load_student_by_phone(next_phone)
                     else:
                         st.session_state.form_initials = {
