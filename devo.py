@@ -33,6 +33,14 @@ st.markdown("""
         .form-title { color: #1a73e8; font-weight: 700; font-size: 1.2rem; margin-bottom: 1rem; }
         .footer { text-align: center; color: #888; font-size: 0.8rem; margin-top: 3rem; }
         .queue-box { background: #e8f0fe; padding: 0.75rem; border-radius: 8px; border-left: 5px solid #1a73e8; font-weight: 600; margin-bottom: 1rem; }
+        .call-btn {
+            display: inline-flex; align-items: center; justify-content: center;
+            background-color: #25d366; color: white !important; font-weight: bold;
+            padding: 0.5rem 1rem; border-radius: 8px; text-decoration: none;
+            width: 100%; text-align: center; margin-top: 0.5rem; height: 3em;
+            box-sizing: border-box; transition: background-color 0.2s;
+        }
+        .call-btn:hover { background-color: #128c7e; text-decoration: none; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -268,6 +276,13 @@ else:
         f_name = st.text_input("Name", value=st.session_state.form_initials["name"])
         f_cmis = st.text_input("CMIS ID", value=st.session_state.form_initials["cmis"])
         f_phone = st.text_input("Contact", value=st.session_state.form_initials["phone"])
+        
+        # HTML Phone Link Integration
+        if f_phone.strip():
+            st.markdown(f'<a href="tel:{f_phone.strip()}" class="call-btn">📞 Click to Call ({f_phone.strip()})</a>', unsafe_allow_html=True)
+        else:
+            st.markdown('<a href="#" class="call-btn" style="background-color: #ccc; pointer-events: none;">📞 No Contact Loaded</a>', unsafe_allow_html=True)
+            
         f_contactable = st.selectbox("Contactable", ["Yes", "No"])
 
     with col2:
