@@ -253,16 +253,24 @@ else:
         st.session_state.form_initials["doj"] = date.today()
         st.rerun()
 
+    # REINFORCED REFRESH DB LOGIC FOR TEST2 & TEST3
     if c4.button("🔄 Refresh DB", use_container_width=True):
-        st.cache_data.clear()
+        st.cache_data.clear()  # Drop all caches completely
+        
+        # Explicitly call and force fresh API pull
         alloc_data = fetch_allocation_data()
+        _ = fetch_all_lookup_data() # Forces fresh reload of Test2 immediately
+        
         st.session_state.allocated_numbers = [
             str(r.get("phone_number")).strip() for r in alloc_data 
             if str(r.get("SPOC_Name")).strip().lower() == st.session_state.user.strip().lower() and r.get("phone_number")
         ]
         if st.session_state.allocated_numbers and st.session_state.queue_index < len(st.session_state.allocated_numbers):
             load_student_by_phone(st.session_state.allocated_numbers[st.session_state.queue_index])
+        
+        st.toast("Database Refreshed Successfully!", icon="🔄")
         st.rerun()
+        
     st.markdown('</div>', unsafe_allow_html=True)
 
     # SECTION 2: THE FORM
