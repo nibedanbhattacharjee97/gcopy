@@ -1,0 +1,2 @@
+spoc_name	password	created_date
+Nibedan	    123456      2026-04-21 22:49:43
