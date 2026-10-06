@@ -87,26 +87,62 @@ def clean_phone(phone_val) -> str:
     digits = re.sub(r"\D", "", str(phone_val).strip())
     return digits[-10:] if len(digits) >= 10 else digits
 
+def load_credentials(scopes):
+    secrets_dict = None
+    
+    # 1. Check Streamlit Secrets under common keys (including [connections.gsheets])
+    try:
+        if hasattr(st, "secrets"):
+            if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
+                secrets_dict = dict(st.secrets["connections"]["gsheets"])
+            elif "connections.gsheets" in st.secrets:
+                secrets_dict = dict(st.secrets["connections.gsheets"])
+            elif "gcp_service_account" in st.secrets:
+                secrets_dict = dict(st.secrets["gcp_service_account"])
+            elif "project_id" in st.secrets and "private_key" in st.secrets:
+                secrets_dict = dict(st.secrets)
+            else:
+                for k in st.secrets.keys():
+                    val = st.secrets[k]
+                    if isinstance(val, dict) or hasattr(val, "get"):
+                        if val.get("project_id") and val.get("private_key"):
+                            secrets_dict = dict(val)
+                            break
+                        for sub_k in val.keys():
+                            sub_val = val[sub_k]
+                            if isinstance(sub_val, dict) or hasattr(sub_val, "get"):
+                                if sub_val.get("project_id") and sub_val.get("private_key"):
+                                    secrets_dict = dict(sub_val)
+                                    break
+                    if secrets_dict:
+                        break
+    except Exception:
+        pass
+
+    if secrets_dict:
+        # Normalize private key newlines
+        if "private_key" in secrets_dict and isinstance(secrets_dict["private_key"], str):
+            secrets_dict["private_key"] = secrets_dict["private_key"].replace("\\n", "\n")
+        return Credentials.from_service_account_info(secrets_dict, scopes=scopes)
+
+    # 2. Check local file paths
+    candidate_paths = [
+        "service_account.json",
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "service_account.json"),
+        os.path.join("gcopy", "service_account.json"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "service_account.json"),
+        "d:/testgsheetup/gcopy/service_account.json"
+    ]
+    for p in candidate_paths:
+        if os.path.exists(p):
+            return Credentials.from_service_account_file(p, scopes=scopes)
+
+    raise FileNotFoundError("service_account.json could not be found.")
+
 @st.cache_resource
 def get_sheets_connection():
     scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-    if "gcp_service_account" in st.secrets:
-        creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
-    else:
-        # Check current folder or relative gcopy folder
-        local_path = "service_account.json"
-        script_dir_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "service_account.json")
-        gcopy_path = os.path.join("gcopy", "service_account.json")
-        
-        if os.path.exists(local_path):
-            creds = Credentials.from_service_account_file(local_path, scopes=scope)
-        elif os.path.exists(script_dir_path):
-            creds = Credentials.from_service_account_file(script_dir_path, scopes=scope)
-        elif os.path.exists(gcopy_path):
-            creds = Credentials.from_service_account_file(gcopy_path, scopes=scope)
-        else:
-            raise FileNotFoundError("service_account.json could not be found.")
-
+    creds = load_credentials(scope)
     gc = gspread.authorize(creds)
     
     # Open required sheets
