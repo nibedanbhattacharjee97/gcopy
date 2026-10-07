@@ -563,83 +563,133 @@ else:
         # SECTION B: Current Status and Earnings [Q1 to Q2b]
         # ----------------------------------------------------------------------
         st.markdown('<div class="section-card"><div class="form-title">💼 Section B: Current Status and Earnings</div>', unsafe_allow_html=True)
-        st.markdown('<p style="color: #64748b; font-size: 0.88rem; margin-top: -0.5rem;">Estimated completion time: 4 to 5 minutes. All responses are confidential.</p>', unsafe_allow_html=True)
-        
-        st.markdown("#### **Q1. What are you doing these days?**")
-        st.caption("*(Read all options. Ask the respondent to choose one.)*")
-        
-        q1_selection = st.radio(
-            label="Q1 Options",
-            options=Q1_OPTIONS,
-            index=None,
-            key=f"rad_q1_{ver}",
-            label_visibility="collapsed"
-        )
-        q1_val = q1_selection if q1_selection else ""
+        st.markdown('<p style="color: #64748b; font-size: 0.88rem; margin-top: -0.5rem; margin-bottom: 1.2rem;">Estimated completion time: 4 to 5 minutes. All responses are confidential.</p>', unsafe_allow_html=True)
 
-        # ROUTING LOGIC
-        # 1 or 2: Self-employment / freelance / gig -> Q2, Q2a, Q2b, Q3, Q4
-        # 3: Regular job -> Q2, then Q3, Q4
-        # 4 to 8: Direct to Q3, Q4
-        is_path_1_2 = q1_val in [
-            "I run my own small business or work for myself",
-            "I do freelance or gig work (like delivery, tutoring, stitching, or online work)"
-        ]
-        is_path_3 = q1_val == "I have a regular job (full-time or part-time)"
-        is_path_non_earning = q1_val in Q1_OPTIONS[3:]
+        col_q1, col_follow = st.columns([1, 1.15], gap="large")
 
-        if is_path_1_2:
-            st.markdown('<div class="routing-badge badge-self-employed">🌟 Active Pathway: Self-Employed / Freelance / Gig Worker (Complete Q2, Q2a, Q2b, Q3, Q4)</div>', unsafe_allow_html=True)
-        elif is_path_3:
-            st.markdown('<div class="routing-badge badge-job">💼 Active Pathway: Regular Job (Complete Q2, then jump to Q3 and Q4)</div>', unsafe_allow_html=True)
-        elif is_path_non_earning:
-            st.markdown('<div class="routing-badge badge-non-earning">📚 Active Pathway: Non-Earning / Studies / Other (Skip Q2, Q2a, Q2b ➔ Proceed directly to Section C)</div>', unsafe_allow_html=True)
-        else:
-            st.markdown('<div class="routing-badge badge-inactive">⏳ Please select a response for Q1 above to activate routing</div>', unsafe_allow_html=True)
-
-        # Q2: Monthly Earnings (Asked if Q1 is 1, 2, or 3)
-        if is_path_1_2 or is_path_3:
-            st.markdown("---")
-            st.markdown("#### **Q2. How much do you earn every month from this work?**")
-            st.caption("*(Ask only if Q1 response is 1, 2, or 3. Read all options. Ask the respondent to choose one.)*")
+        with col_q1:
+            st.markdown("#### **Q1. What are you doing these days?**")
+            st.caption("*(Read all options. Ask the respondent to choose one.)*")
             
-            q2_selection = st.radio(
-                label="Q2 Options",
-                options=Q2_EARNING_OPTIONS,
+            q1_selection = st.radio(
+                label="Q1 Options",
+                options=Q1_OPTIONS,
                 index=None,
-                key=f"rad_q2_{ver}",
+                key=f"rad_q1_{ver}",
                 label_visibility="collapsed"
             )
-            q2_val = q2_selection if q2_selection else ""
+            q1_val = q1_selection if q1_selection else ""
 
-        # Q2a & Q2b: Work Details (Asked ONLY if Q1 is 1 or 2)
-        if is_path_1_2:
-            st.markdown("---")
-            st.markdown("#### **Q2a. What kind of work are you doing?**")
-            st.caption("*(Ask only if Q1 response is 1 or 2. Read all options. Ask the respondent to choose one.)*")
-            
-            q2a_selection = st.radio(
-                label="Q2a Options",
-                options=Q2A_WORK_TYPES,
-                index=None,
-                key=f"rad_q2a_{ver}",
-                label_visibility="collapsed"
-            )
-            q2a_val = q2a_selection if q2a_selection else ""
-            if q2a_val == "Others (Please specify)":
-                q2a_other_val = st.text_input("Please specify kind of work:", key=f"txt_q2a_other_{ver}")
+            # ROUTING LOGIC
+            # 1 or 2: Self-employment / freelance / gig -> Q2, Q2a, Q2b, Q3, Q4
+            # 3: Regular job -> Q2, then Q3, Q4
+            # 4 to 8: Direct to Q3, Q4
+            is_path_1_2 = q1_val in [
+                "I run my own small business or work for myself",
+                "I do freelance or gig work (like delivery, tutoring, stitching, or online work)"
+            ]
+            is_path_3 = q1_val == "I have a regular job (full-time or part-time)"
+            is_path_non_earning = q1_val in Q1_OPTIONS[3:]
 
-            st.markdown("---")
-            st.markdown("#### **Q2b. Where or how do you find your work or customers?**")
-            st.caption("*(Ask only if Q1 response is 1 or 2. Read all options. Ask the respondent to choose all that apply - Checkboxes.)*")
-            
-            # CHECKBOXES for Q2b (NOT A DROPDOWN)
-            for idx, ch in enumerate(Q2B_CHANNELS):
-                cb_val = st.checkbox(ch, key=f"chk_q2b_{idx}_{ver}")
-                if cb_val:
-                    q2b_selected.append(ch)
-                    if ch == "Others (Please specify)":
-                        q2b_other_val = st.text_input("Please specify customer/work source:", key=f"txt_q2b_other_{ver}")
+            if is_path_1_2:
+                st.markdown('<div class="routing-badge badge-self-employed" style="display: block; text-align: center; margin-top: 0.8rem;">🌟 Active Pathway: Self-Employed / Freelance / Gig Worker<br><span style="font-weight: 500; font-size: 0.8rem;">(Complete Q2, Q2a, Q2b on the right)</span></div>', unsafe_allow_html=True)
+            elif is_path_3:
+                st.markdown('<div class="routing-badge badge-job" style="display: block; text-align: center; margin-top: 0.8rem;">💼 Active Pathway: Regular Job<br><span style="font-weight: 500; font-size: 0.8rem;">(Complete Q2 on the right ➔ Proceed to Section C)</span></div>', unsafe_allow_html=True)
+            elif is_path_non_earning:
+                st.markdown('<div class="routing-badge badge-non-earning" style="display: block; text-align: center; margin-top: 0.8rem;">📚 Active Pathway: Non-Earning / Studies / Other<br><span style="font-weight: 500; font-size: 0.8rem;">(Skip Q2, Q2a, Q2b ➔ Proceed directly to Section C)</span></div>', unsafe_allow_html=True)
+            else:
+                st.markdown('<div class="routing-badge badge-inactive" style="display: block; text-align: center; margin-top: 0.8rem;">⏳ Please select a response for Q1 above to activate routing</div>', unsafe_allow_html=True)
+
+        with col_follow:
+            if not q1_val:
+                st.markdown("""
+                    <div style="background: #f8fafc; border: 2px dashed #cbd5e1; border-radius: 12px; padding: 3rem 1.5rem; text-align: center; color: #64748b; margin-top: 0.5rem;">
+                        <div style="font-size: 2.2rem; margin-bottom: 0.5rem;">👉</div>
+                        <div style="font-weight: 700; color: #1e293b; font-size: 1.05rem;">Follow-up Questions</div>
+                        <p style="font-size: 0.88rem; color: #64748b; margin-top: 0.5rem; line-height: 1.5; max-width: 380px; margin-left: auto; margin-right: auto;">
+                            Select the respondent's current activity in <strong>Q1</strong> on the left to display the appropriate follow-up questions (<strong>Q2, Q2a, Q2b</strong>).
+                        </p>
+                    </div>
+                """, unsafe_allow_html=True)
+
+            elif is_path_non_earning:
+                st.markdown("""
+                    <div style="background: #fffaf0; border: 1px solid #fbd38d; border-radius: 12px; padding: 2.5rem 1.5rem; text-align: center; color: #744210; margin-top: 0.5rem;">
+                        <div style="font-size: 2.2rem; margin-bottom: 0.5rem;">📚</div>
+                        <div style="font-weight: 700; font-size: 1.05rem; color: #744210; margin-bottom: 0.4rem;">Non-Earning / Studies Pathway</div>
+                        <p style="font-size: 0.88rem; color: #975a16; line-height: 1.5; margin-bottom: 1rem;">
+                            Questions <strong>Q2, Q2a, and Q2b</strong> are not applicable for this status.
+                        </p>
+                        <div style="background: #ffffff; display: inline-block; padding: 0.45rem 1.1rem; border-radius: 20px; border: 1px solid #fbd38d; font-size: 0.85rem; font-weight: 600; color: #744210;">
+                            ⬇️ Proceed directly to Section C (Training and Support) below
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
+
+            elif is_path_3:
+                # Q2: Monthly Earnings (Asked for Regular Job)
+                st.markdown("#### **Q2. How much do you earn every month from this work?**")
+                st.caption("*(Ask only if Q1 response is 1, 2, or 3. Read all options. Ask the respondent to choose one.)*")
+                
+                q2_selection = st.radio(
+                    label="Q2 Options",
+                    options=Q2_EARNING_OPTIONS,
+                    index=None,
+                    key=f"rad_q2_{ver}",
+                    label_visibility="collapsed"
+                )
+                q2_val = q2_selection if q2_selection else ""
+
+                st.markdown("""
+                    <div style="background: #ebf8ff; border: 1px solid #bee3f8; border-radius: 8px; padding: 0.85rem 1rem; color: #2a4365; font-size: 0.88rem; margin-top: 1rem;">
+                        💼 <strong>Regular Job Pathway:</strong> Questions Q2a and Q2b are skipped. Please proceed directly to Section C below.
+                    </div>
+                """, unsafe_allow_html=True)
+
+            elif is_path_1_2:
+                # Q2: Monthly Earnings
+                st.markdown("#### **Q2. How much do you earn every month from this work?**")
+                st.caption("*(Ask only if Q1 response is 1, 2, or 3. Read all options. Ask the respondent to choose one.)*")
+                
+                q2_selection = st.radio(
+                    label="Q2 Options",
+                    options=Q2_EARNING_OPTIONS,
+                    index=None,
+                    key=f"rad_q2_{ver}",
+                    label_visibility="collapsed"
+                )
+                q2_val = q2_selection if q2_selection else ""
+
+                st.markdown('<hr style="margin: 1.2rem 0; border: none; border-top: 1px solid #e2e8f0;">', unsafe_allow_html=True)
+
+                # Q2a: Kind of Work
+                st.markdown("#### **Q2a. What kind of work are you doing?**")
+                st.caption("*(Ask only if Q1 response is 1 or 2. Read all options. Ask the respondent to choose one.)*")
+                
+                q2a_selection = st.radio(
+                    label="Q2a Options",
+                    options=Q2A_WORK_TYPES,
+                    index=None,
+                    key=f"rad_q2a_{ver}",
+                    label_visibility="collapsed"
+                )
+                q2a_val = q2a_selection if q2a_selection else ""
+                if q2a_val == "Others (Please specify)":
+                    q2a_other_val = st.text_input("Please specify kind of work:", placeholder="Enter work description...", key=f"txt_q2a_other_{ver}")
+
+                st.markdown('<hr style="margin: 1.2rem 0; border: none; border-top: 1px solid #e2e8f0;">', unsafe_allow_html=True)
+
+                # Q2b: Sourcing Channels
+                st.markdown("#### **Q2b. Where or how do you find your work or customers?**")
+                st.caption("*(Ask only if Q1 response is 1 or 2. Read all options. Ask the respondent to choose all that apply - Checkboxes.)*")
+                
+                # CHECKBOXES for Q2b (NOT A DROPDOWN)
+                for idx, ch in enumerate(Q2B_CHANNELS):
+                    cb_val = st.checkbox(ch, key=f"chk_q2b_{idx}_{ver}")
+                    if cb_val:
+                        q2b_selected.append(ch)
+                        if ch == "Others (Please specify)":
+                            q2b_other_val = st.text_input("Please specify customer/work source:", placeholder="Enter customer/work source...", key=f"txt_q2b_other_{ver}")
 
         st.markdown('</div>', unsafe_allow_html=True)
 
