@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import gspread
 from google.oauth2.service_account import Credentials
 from datetime import date, datetime
@@ -444,7 +445,113 @@ else:
     
     if total_assigned > 0 and current_idx < total_assigned:
         current_target_phone = st.session_state.allocated_numbers[current_idx]
-        st.markdown(f'<div class="queue-box">🎯 Active Queue Target #{current_idx + 1}: <b>{current_target_phone}</b> (Progress: {current_idx + 1}/{total_assigned})</div>', unsafe_allow_html=True)
+        components.html(f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+        <style>
+            * {{ box-sizing: border-box; }}
+            body {{
+                margin: 0;
+                padding: 0;
+                background: transparent;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            }}
+            .queue-banner {{
+                background: linear-gradient(135deg, #e8f0fe 0%, #f0f7ff 100%);
+                padding: 10px 16px;
+                border-radius: 8px;
+                border-left: 6px solid #1a73e8;
+                font-weight: 700;
+                color: #1a365d;
+                font-size: 1.05rem;
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                flex-wrap: wrap;
+            }}
+            .phone-number {{
+                color: #0d47a1;
+                font-weight: 800;
+                font-size: 1.15rem;
+                letter-spacing: 0.5px;
+            }}
+            .copy-btn {{
+                background: #1a73e8;
+                color: #ffffff;
+                border: none;
+                padding: 5px 14px;
+                border-radius: 6px;
+                cursor: pointer;
+                font-size: 0.85rem;
+                font-weight: 700;
+                display: inline-flex;
+                align-items: center;
+                gap: 5px;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+                transition: all 0.15s ease-in-out;
+            }}
+            .copy-btn:hover {{
+                background: #1557b0;
+                transform: translateY(-1px);
+                box-shadow: 0 2px 6px rgba(0,0,0,0.18);
+            }}
+            .copy-btn.copied {{
+                background: #10b981;
+            }}
+            .progress-info {{
+                color: #64748b;
+                font-weight: 600;
+                font-size: 0.95rem;
+            }}
+        </style>
+        </head>
+        <body>
+        <div class="queue-banner">
+            <span>🎯 Active Queue Target #{current_idx + 1}: <span class="phone-number">{current_target_phone}</span></span>
+            <button id="copyBtn" class="copy-btn" onclick="copyNumber()">📋 Copy Phone Number</button>
+            <span class="progress-info">(Progress: {current_idx + 1}/{total_assigned})</span>
+        </div>
+        <script>
+        function copyNumber() {{
+            const num = "{current_target_phone}";
+            if (navigator.clipboard && window.isSecureContext) {{
+                navigator.clipboard.writeText(num).then(showSuccess, fallbackCopy);
+            }} else {{
+                fallbackCopy();
+            }}
+            function showSuccess() {{
+                const btn = document.getElementById("copyBtn");
+                btn.innerHTML = "✅ Copied!";
+                btn.className = "copy-btn copied";
+                setTimeout(() => {{
+                    btn.innerHTML = "📋 Copy Phone Number";
+                    btn.className = "copy-btn";
+                }}, 2000);
+            }}
+            function fallbackCopy() {{
+                const ta = document.createElement("textarea");
+                ta.value = num;
+                ta.style.position = "fixed";
+                ta.style.top = "0";
+                ta.style.left = "0";
+                ta.style.opacity = "0";
+                document.body.appendChild(ta);
+                ta.focus();
+                ta.select();
+                try {{
+                    document.execCommand("copy");
+                    showSuccess();
+                }} catch (e) {{
+                    console.error("Copy failed", e);
+                }}
+                document.body.removeChild(ta);
+            }}
+        }}
+        </script>
+        </body>
+        </html>
+        """, height=52)
     elif total_assigned > 0 and current_idx >= total_assigned:
         st.markdown('<div class="queue-box" style="background: #e6f4ea; border-left-color: #34a853; color: #137333;">🎉 Verification Queue Completed! Great job!</div>', unsafe_allow_html=True)
 
