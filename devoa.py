@@ -3,7 +3,9 @@ import streamlit.components.v1 as components
 import gspread
 from google.oauth2.service_account import Credentials
 from datetime import date, datetime
+import csv
 import hashlib
+import io
 import json
 import os
 import re
@@ -89,6 +91,18 @@ def clean_phone(phone_val) -> str:
     digits = re.sub(r"\D", "", str(phone_val).strip())
     return digits[-10:] if len(digits) >= 10 else digits
 
+def parse_date_safe(d_val):
+    """Parses various date string formats into datetime.date, or None if invalid"""
+    if not d_val:
+        return None
+    d_str = str(d_val).strip()
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(d_str[:10], fmt).date()
+        except Exception:
+            pass
+    return None
+
 def load_credentials(scopes):
     secrets_dict = None
     
@@ -141,6 +155,23 @@ def load_credentials(scopes):
 
     raise FileNotFoundError("service_account.json could not be found.")
 
+EXPECTED_HEADERS = [
+    'SPOC Name', 'Students Touch Method', 'STUDENT NAME', 'CMISID', 'CONTACT NUMBER',
+    'Programme completed', 'Course or training name', 'Month and year of completion',
+    'State of residence', 'District or city', 'Gender', 'Age group',
+    'Highest educational qualification', 'Location type of training centre',
+    'Contactable', 'Call Remarks',
+    'Q1. What are you doing these days?',
+    'Q2. How much do you earn every month from this work?',
+    'Q2a. What kind of work are you doing?',
+    'Q2a. Others (Please specify)',
+    'Q2b. Where or how do you find your work or customers?',
+    'Q2b. Others (Please specify)',
+    'Q3. Did the Anudip training help you start your own work or earn on your own?',
+    'Q4. What would help you most to earn better or start your own work?',
+    'Verification Date', 'SPOC Remarks'
+]
+
 @st.cache_resource
 def get_sheets_connection():
     scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
@@ -154,22 +185,6 @@ def get_sheets_connection():
     alloc_ws = gc.open("Test3").sheet1
     
     # Synchronize Test headers if needed
-    EXPECTED_HEADERS = [
-        'SPOC Name', 'Students Touch Method', 'STUDENT NAME', 'CMISID', 'CONTACT NUMBER',
-        'Programme completed', 'Course or training name', 'Month and year of completion',
-        'State of residence', 'District or city', 'Gender', 'Age group',
-        'Highest educational qualification', 'Location type of training centre',
-        'Contactable', 'Call Remarks',
-        'Q1. What are you doing these days?',
-        'Q2. How much do you earn every month from this work?',
-        'Q2a. What kind of work are you doing?',
-        'Q2a. Others (Please specify)',
-        'Q2b. Where or how do you find your work or customers?',
-        'Q2b. Others (Please specify)',
-        'Q3. Did the Anudip training help you start your own work or earn on your own?',
-        'Q4. What would help you most to earn better or start your own work?',
-        'Verification Date', 'SPOC Remarks'
-    ]
     try:
         current_headers = master_ws.row_values(1)
         if not current_headers or current_headers[:5] != EXPECTED_HEADERS[:5] or len(current_headers) < 20 or "Retention Status" in current_headers:
@@ -205,6 +220,29 @@ def fetch_auth_data():
 @st.cache_data(ttl=300)
 def fetch_allocation_data():
     return sheets["allocation"].get_all_records()
+
+@st.cache_data(ttl=20)
+def fetch_master_data():
+    """Fetches all rows from Test verification sheet to check for existing submissions"""
+    try:
+        return sheets["master"].get_all_values()
+    except Exception:
+        return []
+
+def find_master_record_by_phone(phone_target):
+    """Finds existing record in Test sheet by phone number. Returns (row_data, 1_indexed_row_number) or (None, None)"""
+    cleaned = clean_phone(phone_target)
+    if not cleaned:
+        return None, None
+    rows = fetch_master_data()
+    # Scan from bottom to top so latest entry is found
+    for i in range(len(rows) - 1, 0, -1):
+        r = rows[i]
+        if len(r) > 4:
+            p = clean_phone(r[4])
+            if p == cleaned:
+                return r, i + 1
+    return None, None
 
 # ==============================================================================
 # 📋 QUESTIONNAIRE SPECIFICATIONS (Page 3 of Survey Protocol)
@@ -350,6 +388,8 @@ if "show_resume_banner" not in st.session_state:
     st.session_state.show_resume_banner = False
 if "form_version" not in st.session_state:
     st.session_state.form_version = 0
+if "existing_master_row" not in st.session_state:
+    st.session_state.existing_master_row = None
 
 DEFAULT_FORM = {
     "cmis": "",
@@ -363,34 +403,125 @@ DEFAULT_FORM = {
     "gender": "",
     "age_group": "",
     "qualification": "",
-    "location_type": ""
+    "location_type": "",
+    "touch_method": "Tikona_Call",
+    "contactable": "Yes",
+    "call_remarks": "Connected",
+    "q1": "",
+    "q2": "",
+    "q2a": "",
+    "q2a_other": "",
+    "q2b_selected": [],
+    "q2b_other": "",
+    "secb_status": "Full Information Shared",
+    "q3": "",
+    "q4_selected": [],
+    "secc_status": "Full Information Shared",
+    "vdate": date.today(),
+    "spoc_notes": ""
 }
 
 if "form_initials" not in st.session_state or "programme" not in st.session_state.form_initials:
     st.session_state.form_initials = DEFAULT_FORM.copy()
 
 def load_student_by_phone(phone_target):
-    """Searches lookup data from Test2 and stores them cleanly in session state"""
-    _, phone_map = fetch_all_lookup_data()
+    """
+    Searches:
+    1. First in Google Sheet 'Test' (submitted records). If found, loads submitted call details in UPDATE mode.
+    2. If not found in 'Test', searches 'Test2' (student profile lookup) in NEW SUBMISSION mode.
+    """
     cleaned = clean_phone(phone_target)
-    
     if not cleaned:
+        st.session_state.existing_master_row = None
         st.session_state.form_initials = DEFAULT_FORM.copy()
         st.session_state.form_version += 1
-        return False
+        return False, "none"
+
+    # Step 1: Check if already submitted in Test
+    master_rec, master_row_num = find_master_record_by_phone(cleaned)
+    if master_rec and master_row_num:
+        row = list(master_rec) + [""] * max(0, 26 - len(master_rec))
         
+        contactable_val = row[14].strip() if row[14].strip() in ["Yes", "No"] else "Yes"
+        raw_call_remarks = row[15].strip()
+        secb_stat = "Full Information Shared"
+        secc_stat = "Full Information Shared"
+        call_rem_val = "Connected"
+
+        if contactable_val == "Yes":
+            if raw_call_remarks == "Connected":
+                call_rem_val = "Connected"
+            elif raw_call_remarks.startswith("Connected - "):
+                call_rem_val = "Connected"
+                sub_status = raw_call_remarks.replace("Connected - ", "").strip()
+                if sub_status in SURVEY_STATUS_OPTIONS:
+                    secb_stat = sub_status
+                    secc_stat = sub_status
+            elif raw_call_remarks in CALL_STATUS_YES_OPTIONS:
+                call_rem_val = raw_call_remarks
+            else:
+                call_rem_val = "Others"
+        else:
+            if raw_call_remarks in CALL_STATUS_NO_OPTIONS:
+                call_rem_val = raw_call_remarks
+            else:
+                call_rem_val = "Others"
+
+        q2b_raw = row[20].strip()
+        q2b_list = [c.strip() for c in q2b_raw.split(";") if c.strip() and c.strip() != "N/A"] if q2b_raw and q2b_raw != "N/A" else []
+
+        q4_raw = row[23].strip()
+        q4_list = [s.strip() for s in q4_raw.split(";") if s.strip() and s.strip() != "N/A"] if q4_raw and q4_raw != "N/A" else []
+
+        st.session_state.existing_master_row = master_row_num
+        st.session_state.form_initials = {
+            "spoc_name": row[0].strip(),
+            "touch_method": row[1].strip() if row[1].strip() in ["Tikona_Call", "SPOC_call"] else "Tikona_Call",
+            "name": row[2].strip(),
+            "cmis": row[3].strip(),
+            "phone": row[4].strip() or str(phone_target).strip(),
+            "programme": row[5].strip(),
+            "course": row[6].strip(),
+            "completion": row[7].strip(),
+            "state": row[8].strip(),
+            "district": row[9].strip(),
+            "gender": row[10].strip(),
+            "age_group": row[11].strip(),
+            "qualification": row[12].strip(),
+            "location_type": row[13].strip(),
+            "contactable": contactable_val,
+            "call_remarks": call_rem_val,
+            "q1": row[16].strip() if row[16].strip() != "N/A" else "",
+            "q2": row[17].strip() if row[17].strip() != "N/A" else "",
+            "q2a": row[18].strip() if row[18].strip() != "N/A" else "",
+            "q2a_other": row[19].strip(),
+            "q2b_selected": q2b_list,
+            "q2b_other": row[21].strip(),
+            "secb_status": secb_stat,
+            "q3": row[22].strip() if row[22].strip() != "N/A" else "",
+            "q4_selected": q4_list,
+            "secc_status": secc_stat,
+            "vdate": row[24].strip() if row[24].strip() else str(date.today()),
+            "spoc_notes": row[25].strip()
+        }
+        st.session_state.form_version += 1
+        return True, "master"
+
+    # Step 2: Check Test2
+    _, phone_map = fetch_all_lookup_data()
     match = phone_map.get(cleaned)
     if not match:
-        # Fallback partial search
         records, _ = fetch_all_lookup_data()
         for r in records:
             p = str(r.get("Contact Number", "")).strip()
             if cleaned in p or p.endswith(cleaned):
                 match = r
                 break
-                
+
+    st.session_state.existing_master_row = None
     if match:
-        st.session_state.form_initials = {
+        st.session_state.form_initials = DEFAULT_FORM.copy()
+        st.session_state.form_initials.update({
             "cmis": str(match.get("CMIS ID", "")).strip(),
             "phone": str(match.get("Contact Number", "")).strip(),
             "name": str(match.get("student_name", "")).strip(),
@@ -403,14 +534,14 @@ def load_student_by_phone(phone_target):
             "age_group": str(match.get("Age group", "")).strip(),
             "qualification": str(match.get("Highest educational qualification", "")).strip(),
             "location_type": str(match.get("Location type of training centre", "")).strip()
-        }
+        })
         st.session_state.form_version += 1
-        return True
+        return True, "lookup"
     else:
         st.session_state.form_initials = DEFAULT_FORM.copy()
         st.session_state.form_initials["phone"] = str(phone_target).strip()
         st.session_state.form_version += 1
-        return False
+        return False, "none"
 
 # ==============================================================================
 # 🚪 AUTHENTICATION UI
@@ -492,9 +623,100 @@ else:
         st.session_state.allocated_numbers = []
         st.session_state.queue_index = 0
         st.session_state.show_resume_banner = False
+        st.session_state.existing_master_row = None
         st.session_state.form_initials = DEFAULT_FORM.copy()
         st.session_state.form_version += 1
         st.rerun()
+
+    # ==========================================================================
+    # 📥 SPOC VERIFIED DATA EXPORT & FILTERS (Sidebar)
+    # ==========================================================================
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 📥 Download Verified Data")
+
+    # 1. Verification Date Filter
+    vdate_filter_mode = st.sidebar.selectbox(
+        "Verification Date",
+        ["Total data", "Specific Date", "From - To date"],
+        key="side_vdate_mode"
+    )
+
+    spec_vdate = None
+    from_vdate = None
+    to_vdate = None
+
+    if vdate_filter_mode == "Specific Date":
+        spec_vdate = st.sidebar.date_input("Select Date", value=date.today(), key="side_spec_vdate")
+    elif vdate_filter_mode == "From - To date":
+        col_vd1, col_vd2 = st.sidebar.columns(2)
+        from_vdate = col_vd1.date_input("From Date", value=date.today(), key="side_from_vdate")
+        to_vdate = col_vd2.date_input("To Date", value=date.today(), key="side_to_vdate")
+
+    # 2. Contactable Filter
+    cont_filter_mode = st.sidebar.selectbox(
+        "Contactable",
+        ["Total data", "Yes", "No"],
+        key="side_cont_mode"
+    )
+
+    # 3. Filter Master Records for this SPOC
+    all_master_rows = fetch_master_data()
+    master_headers = all_master_rows[0] if (all_master_rows and len(all_master_rows) > 0) else EXPECTED_HEADERS
+    
+    current_spoc_clean = st.session_state.user.strip().lower()
+    raw_spoc_rows = []
+    if len(all_master_rows) > 1:
+        raw_spoc_rows = [
+            r for r in all_master_rows[1:] 
+            if len(r) > 0 and str(r[0]).strip().lower() == current_spoc_clean
+        ]
+
+    filtered_export_rows = []
+    for r in raw_spoc_rows:
+        # Date Filter Check (Col Y: index 24)
+        row_date_str = str(r[24]).strip() if len(r) > 24 else ""
+        row_date = parse_date_safe(row_date_str)
+        date_matches = True
+        
+        if vdate_filter_mode == "Specific Date":
+            date_matches = (row_date == spec_vdate) if row_date else (row_date_str == str(spec_vdate))
+        elif vdate_filter_mode == "From - To date":
+            if row_date and from_vdate and to_vdate:
+                date_matches = (from_vdate <= row_date <= to_vdate)
+            else:
+                date_matches = False
+
+        if not date_matches:
+            continue
+
+        # Contactable Filter Check (Col O: index 14)
+        row_cont = str(r[14]).strip().lower() if len(r) > 14 else ""
+        if cont_filter_mode == "Yes" and row_cont != "yes":
+            continue
+        elif cont_filter_mode == "No" and row_cont != "no":
+            continue
+
+        filtered_export_rows.append(r)
+
+    # CSV Generation
+    csv_buf = io.StringIO()
+    csv_writer = csv.writer(csv_buf)
+    csv_writer.writerow(master_headers)
+    for r in filtered_export_rows:
+        padded = list(r) + [""] * max(0, len(master_headers) - len(r))
+        csv_writer.writerow(padded[:len(master_headers)])
+    csv_bytes = csv_buf.getvalue().encode("utf-8")
+
+    st.sidebar.caption(f"📊 Verified records: **{len(filtered_export_rows)}**")
+
+    # Download Button
+    st.sidebar.download_button(
+        label=f"📥 Download Respective CSVs ({st.session_state.user})",
+        data=csv_bytes,
+        file_name=f"verified_{st.session_state.user.lower().replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
 
     # Resume Banner (If SPOC returned after closing tab/shift)
     if st.session_state.get("show_resume_banner") and total_assigned > 0 and current_idx > 0:
@@ -645,11 +867,15 @@ else:
                         st.session_state.show_resume_banner = False
                         save_spoc_progress(st.session_state.user, idx, num)
                         break
-            found = load_student_by_phone(target)
+            found, src = load_student_by_phone(target)
             if found:
-                st.toast("Student record loaded from database!", icon="✅")
+                if src == "master":
+                    row_num = st.session_state.get("existing_master_row")
+                    st.toast(f"Found existing record in Test (Row #{row_num})! Loaded for update.", icon="📝")
+                else:
+                    st.toast("Student record loaded from database!", icon="✅")
             else:
-                st.warning("Number not found in Test2 master data. Enter details manually.")
+                st.warning("Number not found in Test or Test2 database. Enter details manually.")
             st.rerun()
         else:
             if total_assigned > 0 and current_idx < total_assigned:
@@ -689,6 +915,7 @@ else:
 
     # 🧹 Clear Form
     if c_clear.button("🧹 Clear Form", use_container_width=True):
+        st.session_state.existing_master_row = None
         st.session_state.form_initials = DEFAULT_FORM.copy()
         st.session_state.form_version += 1
         st.rerun()
@@ -708,14 +935,33 @@ else:
 
     st.markdown('</div>', unsafe_allow_html=True)
 
+    ver = st.session_state.form_version
+    init = st.session_state.form_initials
+
+    # UPDATE MODE NOTIFICATION (If editing a previously submitted record)
+    if st.session_state.get("existing_master_row"):
+        r_num = st.session_state.existing_master_row
+        st.markdown(f"""
+        <div style="background: #fffbeb; border: 2px solid #f59e0b; border-radius: 10px; padding: 14px 18px; margin-bottom: 1.2rem; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; box-shadow: 0 2px 8px rgba(245,158,11,0.12);">
+            <div>
+                <span style="font-size: 1.25rem; margin-right: 6px;">📝</span>
+                <strong style="color: #92400e; font-size: 1.05rem;">PREVIOUSLY SUBMITTED RECORD FOUND (Row #{r_num} in Test Sheet) — UPDATE MODE ACTIVE</strong>
+                <p style="margin: 4px 0 0 0; color: #78350f; font-size: 0.88rem; line-height: 1.4;">
+                    All previously submitted call details for this student ({init.get('phone', '')}) have been loaded into the form below. 
+                    <br>You can update any field (Call Outcome, Answers, Remarks) and submit — <strong>it will update Row #{r_num} directly without creating a duplicate record</strong>.
+                </p>
+            </div>
+            <span style="background: #f59e0b; color: #ffffff; padding: 6px 14px; border-radius: 6px; font-weight: 700; font-size: 0.85rem; letter-spacing: 0.5px;">
+                ✏️ UPDATE IN-PLACE
+            </span>
+        </div>
+        """, unsafe_allow_html=True)
+
     # ==========================================================================
     # SECTION A: RESPONDENT PROFILE (Pre-filled from Test2)
     # ==========================================================================
     st.markdown('<div class="section-card"><div class="form-title">📋 Section A: Respondent Profile</div>', unsafe_allow_html=True)
     
-    ver = st.session_state.form_version
-    init = st.session_state.form_initials
-
     pa1, pa2, pa3, pa4 = st.columns(4)
     with pa1:
         f_name = st.text_input("A1. Student / Respondent Name", value=init.get("name", ""), key=f"inp_name_{ver}")
@@ -743,14 +989,24 @@ else:
     
     col_t1, col_t2, col_t3 = st.columns([1.5, 1.5, 3])
     with col_t1:
-        f_touch = st.selectbox("Touch Method", ["Tikona_Call", "SPOC_call"], key=f"sel_touch_{ver}")
+        touch_opts = ["Tikona_Call", "SPOC_call"]
+        saved_touch = init.get("touch_method", "Tikona_Call")
+        touch_idx = touch_opts.index(saved_touch) if saved_touch in touch_opts else 0
+        f_touch = st.selectbox("Touch Method", touch_opts, index=touch_idx, key=f"sel_touch_{ver}")
     with col_t2:
-        f_contactable = st.selectbox("Contactable", ["Yes", "No"], key=f"sel_cont_{ver}")
+        cont_opts = ["Yes", "No"]
+        saved_cont = init.get("contactable", "Yes")
+        cont_idx = cont_opts.index(saved_cont) if saved_cont in cont_opts else 0
+        f_contactable = st.selectbox("Contactable", cont_opts, index=cont_idx, key=f"sel_cont_{ver}")
     with col_t3:
         if f_contactable == "Yes":
-            f_call_remarks = st.selectbox("Call Outcome / Reason", CALL_STATUS_YES_OPTIONS, key=f"sel_reach_{ver}")
+            saved_rem = init.get("call_remarks", "Connected")
+            rem_idx = CALL_STATUS_YES_OPTIONS.index(saved_rem) if saved_rem in CALL_STATUS_YES_OPTIONS else 0
+            f_call_remarks = st.selectbox("Call Outcome / Reason", CALL_STATUS_YES_OPTIONS, index=rem_idx, key=f"sel_reach_{ver}")
         else:
-            f_call_remarks = st.selectbox("Call Outcome / Reason", CALL_STATUS_NO_OPTIONS, key=f"sel_unreach_{ver}")
+            saved_rem = init.get("call_remarks", "RNR (Ring No Response)")
+            rem_idx = CALL_STATUS_NO_OPTIONS.index(saved_rem) if saved_rem in CALL_STATUS_NO_OPTIONS else 0
+            f_call_remarks = st.selectbox("Call Outcome / Reason", CALL_STATUS_NO_OPTIONS, index=rem_idx, key=f"sel_unreach_{ver}")
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -782,10 +1038,12 @@ else:
             st.markdown("#### **Q1. What are you doing these days?**")
             st.caption("*(Read all options. Ask the respondent to choose one.)*")
             
+            q1_saved = init.get("q1", "")
+            q1_idx = Q1_OPTIONS.index(q1_saved) if q1_saved in Q1_OPTIONS else None
             q1_selection = st.radio(
                 label="Q1 Options",
                 options=Q1_OPTIONS,
-                index=None,
+                index=q1_idx,
                 key=f"rad_q1_{ver}",
                 label_visibility="collapsed"
             )
@@ -842,10 +1100,12 @@ else:
                 st.markdown("#### **Q2. How much do you earn every month from this work?**")
                 st.caption("*(Ask only if Q1 response is 1, 2, or 3. Read all options. Ask the respondent to choose one.)*")
                 
+                q2_saved = init.get("q2", "")
+                q2_idx = Q2_EARNING_OPTIONS.index(q2_saved) if q2_saved in Q2_EARNING_OPTIONS else None
                 q2_selection = st.radio(
                     label="Q2 Options",
                     options=Q2_EARNING_OPTIONS,
-                    index=None,
+                    index=q2_idx,
                     key=f"rad_q2_{ver}",
                     label_visibility="collapsed"
                 )
@@ -862,10 +1122,12 @@ else:
                 st.markdown("#### **Q2. How much do you earn every month from this work?**")
                 st.caption("*(Ask only if Q1 response is 1, 2, or 3. Read all options. Ask the respondent to choose one.)*")
                 
+                q2_saved = init.get("q2", "")
+                q2_idx = Q2_EARNING_OPTIONS.index(q2_saved) if q2_saved in Q2_EARNING_OPTIONS else None
                 q2_selection = st.radio(
                     label="Q2 Options",
                     options=Q2_EARNING_OPTIONS,
-                    index=None,
+                    index=q2_idx,
                     key=f"rad_q2_{ver}",
                     label_visibility="collapsed"
                 )
@@ -877,16 +1139,18 @@ else:
                 st.markdown("#### **Q2a. What kind of work are you doing?**")
                 st.caption("*(Ask only if Q1 response is 1 or 2. Read all options. Ask the respondent to choose one.)*")
                 
+                q2a_saved = init.get("q2a", "")
+                q2a_idx = Q2A_WORK_TYPES.index(q2a_saved) if q2a_saved in Q2A_WORK_TYPES else None
                 q2a_selection = st.radio(
                     label="Q2a Options",
                     options=Q2A_WORK_TYPES,
-                    index=None,
+                    index=q2a_idx,
                     key=f"rad_q2a_{ver}",
                     label_visibility="collapsed"
                 )
                 q2a_val = q2a_selection if q2a_selection else ""
                 if q2a_val == "Others (Please specify)":
-                    q2a_other_val = st.text_input("Please specify kind of work:", placeholder="Enter work description...", key=f"txt_q2a_other_{ver}")
+                    q2a_other_val = st.text_input("Please specify kind of work:", value=init.get("q2a_other", ""), placeholder="Enter work description...", key=f"txt_q2a_other_{ver}")
 
                 st.markdown('<hr style="margin: 1.2rem 0; border: none; border-top: 1px solid #e2e8f0;">', unsafe_allow_html=True)
 
@@ -895,19 +1159,23 @@ else:
                 st.caption("*(Ask only if Q1 response is 1 or 2. Read all options. Ask the respondent to choose all that apply - Checkboxes.)*")
                 
                 # CHECKBOXES for Q2b (NOT A DROPDOWN)
+                saved_q2b = init.get("q2b_selected", [])
                 for idx, ch in enumerate(Q2B_CHANNELS):
-                    cb_val = st.checkbox(ch, key=f"chk_q2b_{idx}_{ver}")
+                    cb_val = st.checkbox(ch, value=(ch in saved_q2b), key=f"chk_q2b_{idx}_{ver}")
                     if cb_val:
                         q2b_selected.append(ch)
                         if ch == "Others (Please specify)":
-                            q2b_other_val = st.text_input("Please specify customer/work source:", placeholder="Enter customer/work source...", key=f"txt_q2b_other_{ver}")
+                            q2b_other_val = st.text_input("Please specify customer/work source:", value=init.get("q2b_other", ""), placeholder="Enter customer/work source...", key=f"txt_q2b_other_{ver}")
 
         st.markdown('<hr style="margin: 1.4rem 0 1rem 0; border: none; border-top: 1px solid #e2e8f0;">', unsafe_allow_html=True)
         col_sb1, col_sb2 = st.columns([2.5, 2.5])
         with col_sb1:
+            saved_secb = init.get("secb_status", "Full Information Shared")
+            secb_idx = SURVEY_STATUS_OPTIONS.index(saved_secb) if saved_secb in SURVEY_STATUS_OPTIONS else 0
             b_survey_status = st.selectbox(
                 "Section B: Information Sharing Status",
                 SURVEY_STATUS_OPTIONS,
+                index=secb_idx,
                 key=f"sel_secb_status_{ver}",
                 help="Select if respondent refused to share full details or call disconnected during Section B"
             )
@@ -924,10 +1192,12 @@ else:
             st.markdown("#### **Q3. Did the Anudip training help you start your own work or earn on your own?**")
             st.caption("*(Read all options. Ask the respondent to choose one.)*")
             
+            q3_saved = init.get("q3", "")
+            q3_idx = Q3_TRAINING_RELEVANCE.index(q3_saved) if q3_saved in Q3_TRAINING_RELEVANCE else None
             q3_selection = st.radio(
                 label="Q3 Options",
                 options=Q3_TRAINING_RELEVANCE,
-                index=None,
+                index=q3_idx,
                 key=f"rad_q3_{ver}",
                 label_visibility="collapsed"
             )
@@ -941,21 +1211,26 @@ else:
             # CHECKBOXES for Q4 (NOT A DROPDOWN)
             q4_no_help_key = f"chk_q4_6_{ver}"
             no_help_checked = st.session_state.get(q4_no_help_key, False)
+            saved_q4 = init.get("q4_selected", [])
             
             for idx, sup in enumerate(Q4_SUPPORT_OPTIONS):
                 is_none_opt = (sup == "I do not need any help right now")
                 # If "no help" is checked, disable other options
                 disabled_flag = (not is_none_opt) and no_help_checked
-                cb_sup = st.checkbox(sup, key=f"chk_q4_{idx}_{ver}", disabled=disabled_flag)
+                is_checked = (sup in saved_q4) if not disabled_flag else False
+                cb_sup = st.checkbox(sup, value=is_checked, key=f"chk_q4_{idx}_{ver}", disabled=disabled_flag)
                 if cb_sup and not disabled_flag:
                     q4_selected.append(sup)
 
             st.markdown('<hr style="margin: 1.4rem 0 1rem 0; border: none; border-top: 1px solid #e2e8f0;">', unsafe_allow_html=True)
             col_sc1, col_sc2 = st.columns([2.5, 2.5])
             with col_sc1:
+                saved_secc = init.get("secc_status", "Full Information Shared")
+                secc_idx = SURVEY_STATUS_OPTIONS.index(saved_secc) if saved_secc in SURVEY_STATUS_OPTIONS else 0
                 c_survey_status = st.selectbox(
                     "Section C: Information Sharing Status",
                     SURVEY_STATUS_OPTIONS,
+                    index=secc_idx,
                     key=f"sel_secc_status_{ver}",
                     help="Select if respondent refused to share full details or call disconnected during Section C"
                 )
@@ -993,15 +1268,38 @@ else:
     # ==========================================================================
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     f_sub1, f_sub2 = st.columns([1.5, 3.5])
+    init_vdate = init.get("vdate")
+    if isinstance(init_vdate, str) and init_vdate:
+        try:
+            init_vdate = datetime.strptime(init_vdate, "%Y-%m-%d").date()
+        except Exception:
+            init_vdate = date.today()
+    elif not isinstance(init_vdate, (date, datetime)):
+        init_vdate = date.today()
+
     with f_sub1:
-        f_vdate = st.date_input("Verification Date", value=date.today(), key=f"inp_vdate_{ver}")
+        f_vdate = st.date_input("Verification Date", value=init_vdate, key=f"inp_vdate_{ver}")
     with f_sub2:
-        f_spoc_notes = st.text_input("SPOC Notes / Calling Remarks", placeholder="Any additional notes or observations...", key=f"inp_notes_{ver}")
+        f_spoc_notes = st.text_input("SPOC Notes / Calling Remarks", value=init.get("spoc_notes", ""), placeholder="Any additional notes or observations...", key=f"inp_notes_{ver}")
 
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # 🚀 SUBMIT BUTTON
-    submit_btn = st.button("🚀 SUBMIT VERIFICATION TO TEST SHEET", use_container_width=True, type="primary")
+    # 🚀 SUBMIT / UPDATE BUTTON
+    is_update_mode = bool(st.session_state.get("existing_master_row"))
+    if is_update_mode:
+        row_num = st.session_state.existing_master_row
+        submit_btn = st.button(
+            f"🔄 UPDATE EXISTING RECORD IN TEST SHEET (Row #{row_num} - No Duplicate)", 
+            use_container_width=True, 
+            type="primary"
+        )
+    else:
+        submit_btn = st.button(
+            "🚀 SUBMIT VERIFICATION TO TEST SHEET", 
+            use_container_width=True, 
+            type="primary"
+        )
+
     if submit_btn:
         # VALIDATION RULES
         can_save = True
@@ -1075,8 +1373,29 @@ else:
                         f_spoc_notes                                         # 26: SPOC Remarks
                     ]
                     
-                    sheets["master"].append_row(payload)
-                    st.success(f"✅ Record for {f_name} ({f_phone}) saved successfully to Google Sheets!")
+                    # Determine whether this is an UPDATE or NEW APPEND
+                    target_row = st.session_state.get("existing_master_row")
+                    
+                    # Extra safety: Check Test sheet one more time by clean phone
+                    if not target_row:
+                        cleaned_cur_phone = clean_phone(f_phone)
+                        if cleaned_cur_phone:
+                            m_rows = fetch_master_data()
+                            for i in range(len(m_rows) - 1, 0, -1):
+                                if len(m_rows[i]) > 4 and clean_phone(m_rows[i][4]) == cleaned_cur_phone:
+                                    target_row = i + 1
+                                    break
+
+                    if target_row:
+                        sheets["master"].update(values=[payload], range_name=f"A{target_row}:Z{target_row}")
+                        st.cache_data.clear()
+                        st.session_state.existing_master_row = None
+                        st.success(f"✅ Record for {f_name} ({f_phone}) UPDATED successfully in Google Sheet 'Test' (Row #{target_row})! No duplicate created.")
+                    else:
+                        sheets["master"].append_row(payload)
+                        st.cache_data.clear()
+                        st.session_state.existing_master_row = None
+                        st.success(f"✅ Record for {f_name} ({f_phone}) saved successfully to Google Sheet 'Test'!")
                     
                     # Queue progression
                     st.session_state.queue_index += 1
