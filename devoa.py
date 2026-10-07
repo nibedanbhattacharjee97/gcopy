@@ -282,6 +282,12 @@ CALL_STATUS_NO_OPTIONS = [
 
 CALL_STATUS_OPTIONS = CALL_STATUS_NO_OPTIONS
 
+SURVEY_STATUS_OPTIONS = [
+    "Full Information Shared",
+    "Dont Want Share Full Information",
+    "Call Disconnected / Cut Down Midway"
+]
+
 # ==============================================================================
 # 🔑 SESSION STATES & LOOKUP LOGIC
 # ==============================================================================
@@ -434,7 +440,7 @@ else:
         st.rerun()
 
     # SECTION 1: QUEUE & FAST PHONE SEARCH NAVIGATOR
-    st.markdown('<div class="section-card"><div class="form-title">⚡ High Speed Queue & Contact Search</div>', unsafe_allow_html=True)
+ #   st.markdown('<div class="section-card"><div class="form-title">⚡ High Speed Queue & Contact Search</div>', unsafe_allow_html=True)
     
     if total_assigned > 0 and current_idx < total_assigned:
         current_target_phone = st.session_state.allocated_numbers[current_idx]
@@ -560,6 +566,8 @@ else:
     q2b_other_val = ""
     q3_val = ""
     q4_selected = []
+    b_survey_status = "Full Information Shared"
+    c_survey_status = "Full Information Shared"
 
     # ==========================================================================
     # SECTIONS B & C: SURVEY QUESTIONNAIRE (Visible if Contactable == Yes and Connected)
@@ -697,44 +705,78 @@ else:
                         if ch == "Others (Please specify)":
                             q2b_other_val = st.text_input("Please specify customer/work source:", placeholder="Enter customer/work source...", key=f"txt_q2b_other_{ver}")
 
+        st.markdown('<hr style="margin: 1.4rem 0 1rem 0; border: none; border-top: 1px solid #e2e8f0;">', unsafe_allow_html=True)
+        col_sb1, col_sb2 = st.columns([2.5, 2.5])
+        with col_sb1:
+            b_survey_status = st.selectbox(
+                "Section B: Information Sharing Status",
+                SURVEY_STATUS_OPTIONS,
+                key=f"sel_secb_status_{ver}",
+                help="Select if respondent refused to share full details or call disconnected during Section B"
+            )
+
         st.markdown('</div>', unsafe_allow_html=True)
 
         # ----------------------------------------------------------------------
         # SECTION C: Training and Support [Q3 to Q4]
         # ----------------------------------------------------------------------
-        st.markdown('<div class="section-card"><div class="form-title">🎓 Section C: Training and Support</div>', unsafe_allow_html=True)
-        
-        # Q3: Training Relevance
-        st.markdown("#### **Q3. Did the Anudip training help you start your own work or earn on your own?**")
-        st.caption("*(Read all options. Ask the respondent to choose one.)*")
-        
-        q3_selection = st.radio(
-            label="Q3 Options",
-            options=Q3_TRAINING_RELEVANCE,
-            index=None,
-            key=f"rad_q3_{ver}",
-            label_visibility="collapsed"
-        )
-        q3_val = q3_selection if q3_selection else ""
+        if b_survey_status == "Full Information Shared":
+            st.markdown('<div class="section-card"><div class="form-title">🎓 Section C: Training and Support</div>', unsafe_allow_html=True)
+            
+            # Q3: Training Relevance
+            st.markdown("#### **Q3. Did the Anudip training help you start your own work or earn on your own?**")
+            st.caption("*(Read all options. Ask the respondent to choose one.)*")
+            
+            q3_selection = st.radio(
+                label="Q3 Options",
+                options=Q3_TRAINING_RELEVANCE,
+                index=None,
+                key=f"rad_q3_{ver}",
+                label_visibility="collapsed"
+            )
+            q3_val = q3_selection if q3_selection else ""
 
-        # Q4: Needed Support
-        st.markdown("---")
-        st.markdown("#### **Q4. What would help you most to earn better or start your own work?**")
-        st.caption("*(Read all options. Ask the respondent to choose all that apply. If the respondent does not need any help, record only that option - Checkboxes.)*")
-        
-        # CHECKBOXES for Q4 (NOT A DROPDOWN)
-        q4_no_help_key = f"chk_q4_6_{ver}"
-        no_help_checked = st.session_state.get(q4_no_help_key, False)
-        
-        for idx, sup in enumerate(Q4_SUPPORT_OPTIONS):
-            is_none_opt = (sup == "I do not need any help right now")
-            # If "no help" is checked, disable other options
-            disabled_flag = (not is_none_opt) and no_help_checked
-            cb_sup = st.checkbox(sup, key=f"chk_q4_{idx}_{ver}", disabled=disabled_flag)
-            if cb_sup and not disabled_flag:
-                q4_selected.append(sup)
+            # Q4: Needed Support
+            st.markdown("---")
+            st.markdown("#### **Q4. What would help you most to earn better or start your own work?**")
+            st.caption("*(Read all options. Ask the respondent to choose all that apply. If the respondent does not need any help, record only that option - Checkboxes.)*")
+            
+            # CHECKBOXES for Q4 (NOT A DROPDOWN)
+            q4_no_help_key = f"chk_q4_6_{ver}"
+            no_help_checked = st.session_state.get(q4_no_help_key, False)
+            
+            for idx, sup in enumerate(Q4_SUPPORT_OPTIONS):
+                is_none_opt = (sup == "I do not need any help right now")
+                # If "no help" is checked, disable other options
+                disabled_flag = (not is_none_opt) and no_help_checked
+                cb_sup = st.checkbox(sup, key=f"chk_q4_{idx}_{ver}", disabled=disabled_flag)
+                if cb_sup and not disabled_flag:
+                    q4_selected.append(sup)
 
-        st.markdown('</div>', unsafe_allow_html=True)
+            st.markdown('<hr style="margin: 1.4rem 0 1rem 0; border: none; border-top: 1px solid #e2e8f0;">', unsafe_allow_html=True)
+            col_sc1, col_sc2 = st.columns([2.5, 2.5])
+            with col_sc1:
+                c_survey_status = st.selectbox(
+                    "Section C: Information Sharing Status",
+                    SURVEY_STATUS_OPTIONS,
+                    key=f"sel_secc_status_{ver}",
+                    help="Select if respondent refused to share full details or call disconnected during Section C"
+                )
+
+            st.markdown('</div>', unsafe_allow_html=True)
+        else:
+            c_survey_status = b_survey_status
+            st.markdown(f'''
+                <div class="section-card" style="border-left: 5px solid #f59e0b; background: #fffdfa;">
+                    <div style="font-weight: 700; color: #92400e; font-size: 1rem; margin-bottom: 0.3rem;">
+                        ⚠️ Section B Status: {b_survey_status}
+                    </div>
+                    <p style="color: #78350f; font-size: 0.88rem; margin: 0;">
+                        Student did not provide full information for Section B (<strong>{b_survey_status}</strong>). Section C (Training and Support) is skipped.
+                        <br>You can enter any additional notes in <strong>SPOC Notes</strong> below and click <strong>Submit</strong>.
+                    </p>
+                </div>
+            ''', unsafe_allow_html=True)
 
     elif f_contactable == "Yes":
         st.markdown(f'''
@@ -772,21 +814,23 @@ else:
             can_save = False
             err_msg = "Student Name and CMIS ID are required."
         elif f_contactable == "Yes" and f_call_remarks == "Connected":
-            if not q1_val:
-                can_save = False
-                err_msg = "Please answer Q1 (What are you doing these days?)."
-            elif (is_path_1_2 or is_path_3) and not q2_val:
-                can_save = False
-                err_msg = "Please answer Q2 (Monthly earnings)."
-            elif is_path_1_2 and not q2a_val:
-                can_save = False
-                err_msg = "Please answer Q2a (Kind of work)."
-            elif not q3_val:
-                can_save = False
-                err_msg = "Please answer Q3 (Did Anudip training help)."
-            elif not q4_selected:
-                can_save = False
-                err_msg = "Please select at least one option for Q4 (Support needed)."
+            if b_survey_status == "Full Information Shared":
+                if not q1_val:
+                    can_save = False
+                    err_msg = "Please answer Q1 (What are you doing these days?), or select 'Dont Want Share Full Information' if refused."
+                elif (is_path_1_2 or is_path_3) and not q2_val:
+                    can_save = False
+                    err_msg = "Please answer Q2 (Monthly earnings), or select 'Dont Want Share Full Information' if refused."
+                elif is_path_1_2 and not q2a_val:
+                    can_save = False
+                    err_msg = "Please answer Q2a (Kind of work), or select 'Dont Want Share Full Information' if refused."
+                elif c_survey_status == "Full Information Shared":
+                    if not q3_val:
+                        can_save = False
+                        err_msg = "Please answer Q3 (Did Anudip training help), or select 'Dont Want Share Full Information' if refused."
+                    elif not q4_selected:
+                        can_save = False
+                        err_msg = "Please select at least one option for Q4 (Support needed), or select 'Dont Want Share Full Information' if refused."
                 
         if not can_save:
             st.error(f"⚠️ Validation Failed: {err_msg}")
@@ -794,6 +838,17 @@ else:
             with st.spinner("Saving verification payload to Google Sheet 'Test'..."):
                 try:
                     is_survey_active = (f_contactable == "Yes" and f_call_remarks == "Connected")
+                    
+                    if is_survey_active:
+                        if b_survey_status != "Full Information Shared":
+                            final_call_remarks = f"Connected - {b_survey_status}"
+                        elif c_survey_status != "Full Information Shared":
+                            final_call_remarks = f"Connected - {c_survey_status}"
+                        else:
+                            final_call_remarks = "Connected"
+                    else:
+                        final_call_remarks = f_call_remarks
+
                     payload = [
                         st.session_state.user,                               # 1: SPOC Name
                         f_touch,                                             # 2: Students Touch Method
@@ -810,15 +865,15 @@ else:
                         f_qualification,                                     # 13: Highest educational qualification
                         f_location_type,                                     # 14: Location type of training centre
                         f_contactable,                                       # 15: Contactable
-                        f_call_remarks,                                      # 16: Call Remarks
-                        q1_val if is_survey_active else "N/A",               # 17: Q1. Current Status
-                        q2_val if is_survey_active else "N/A",               # 18: Q2. Monthly Earnings
-                        q2a_val if is_survey_active else "N/A",              # 19: Q2a. Kind of Work
+                        final_call_remarks,                                  # 16: Call Remarks
+                        q1_val if (is_survey_active and q1_val) else "N/A",  # 17: Q1. Current Status
+                        q2_val if (is_survey_active and q2_val) else "N/A",  # 18: Q2. Monthly Earnings
+                        q2a_val if (is_survey_active and q2a_val) else "N/A", # 19: Q2a. Kind of Work
                         q2a_other_val if is_survey_active else "",           # 20: Q2a. Others Specify
-                        "; ".join(q2b_selected) if is_survey_active else "N/A", # 21: Q2b. Channels
+                        "; ".join(q2b_selected) if (is_survey_active and q2b_selected) else "N/A", # 21: Q2b. Channels
                         q2b_other_val if is_survey_active else "",           # 22: Q2b. Others Specify
-                        q3_val if is_survey_active else "N/A",               # 23: Q3. Training Helpfulness
-                        "; ".join(q4_selected) if is_survey_active else "N/A",  # 24: Q4. Support Needed
+                        q3_val if (is_survey_active and q3_val) else "N/A",  # 23: Q3. Training Helpfulness
+                        "; ".join(q4_selected) if (is_survey_active and q4_selected) else "N/A",  # 24: Q4. Support Needed
                         str(f_vdate),                                        # 25: Verification Date
                         f_spoc_notes                                         # 26: SPOC Remarks
                     ]
