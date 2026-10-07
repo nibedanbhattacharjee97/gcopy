@@ -263,17 +263,24 @@ Q4_SUPPORT_OPTIONS = [
     "I do not need any help right now"
 ]
 
-CALL_STATUS_OPTIONS = [
-    "Did not respond",
-    "Switched off",
-    "Network issue",
-    "Incoming Not Available",
-    "Wrong Number",
+CALL_STATUS_YES_OPTIONS = [
+    "Connected",
     "Not a student",
     "Language issue",
     "Call Disconnected",
     "Others"
 ]
+
+CALL_STATUS_NO_OPTIONS = [
+    "Did not respond",
+    "Switched off",
+    "Network issue",
+    "Incoming Not Available",
+    "Wrong Number",
+    "Others"
+]
+
+CALL_STATUS_OPTIONS = CALL_STATUS_NO_OPTIONS
 
 # ==============================================================================
 # 🔑 SESSION STATES & LOOKUP LOGIC
@@ -537,11 +544,10 @@ else:
     with col_t2:
         f_contactable = st.selectbox("Contactable", ["Yes", "No"], key=f"sel_cont_{ver}")
     with col_t3:
-        if f_contactable == "No":
-            f_call_remarks = st.selectbox("Call Outcome / Reason", CALL_STATUS_OPTIONS, key=f"sel_unreach_{ver}")
+        if f_contactable == "Yes":
+            f_call_remarks = st.selectbox("Call Outcome / Reason", CALL_STATUS_YES_OPTIONS, key=f"sel_reach_{ver}")
         else:
-            f_call_remarks = "Connected"
-        #    st.info("Student connected successfully. Please proceed to the questionnaire below.")
+            f_call_remarks = st.selectbox("Call Outcome / Reason", CALL_STATUS_NO_OPTIONS, key=f"sel_unreach_{ver}")
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -556,9 +562,9 @@ else:
     q4_selected = []
 
     # ==========================================================================
-    # SECTIONS B & C: SURVEY QUESTIONNAIRE (Visible if Contactable == Yes)
+    # SECTIONS B & C: SURVEY QUESTIONNAIRE (Visible if Contactable == Yes and Connected)
     # ==========================================================================
-    if f_contactable == "Yes":
+    if f_contactable == "Yes" and f_call_remarks == "Connected":
         # ----------------------------------------------------------------------
         # SECTION B: Current Status and Earnings [Q1 to Q2b]
         # ----------------------------------------------------------------------
@@ -730,6 +736,19 @@ else:
 
         st.markdown('</div>', unsafe_allow_html=True)
 
+    elif f_contactable == "Yes":
+        st.markdown(f'''
+            <div class="section-card" style="border-left: 5px solid #0f4c81; background: #f8fafc;">
+                <div class="form-title" style="color: #0f4c81; font-size: 1.1rem; margin-bottom: 0.4rem;">
+                    📞 Call Outcome: {f_call_remarks}
+                </div>
+                <p style="color: #475569; font-size: 0.9rem; margin-bottom: 0;">
+                    Student was reached / tracked (<strong>Contactable: Yes</strong>) with outcome: <strong>{f_call_remarks}</strong>.<br>
+                    Survey questionnaire (Sections B & C) is skipped. Please enter any additional details in <strong>SPOC Notes</strong> below and submit.
+                </p>
+            </div>
+        ''', unsafe_allow_html=True)
+
     # ==========================================================================
     # FINAL DETAILS & SUBMIT
     # ==========================================================================
@@ -752,7 +771,7 @@ else:
         if not f_name or not f_cmis:
             can_save = False
             err_msg = "Student Name and CMIS ID are required."
-        elif f_contactable == "Yes":
+        elif f_contactable == "Yes" and f_call_remarks == "Connected":
             if not q1_val:
                 can_save = False
                 err_msg = "Please answer Q1 (What are you doing these days?)."
@@ -774,6 +793,7 @@ else:
         else:
             with st.spinner("Saving verification payload to Google Sheet 'Test'..."):
                 try:
+                    is_survey_active = (f_contactable == "Yes" and f_call_remarks == "Connected")
                     payload = [
                         st.session_state.user,                               # 1: SPOC Name
                         f_touch,                                             # 2: Students Touch Method
@@ -791,14 +811,14 @@ else:
                         f_location_type,                                     # 14: Location type of training centre
                         f_contactable,                                       # 15: Contactable
                         f_call_remarks,                                      # 16: Call Remarks
-                        q1_val if f_contactable == "Yes" else "N/A",         # 17: Q1. Current Status
-                        q2_val if f_contactable == "Yes" else "N/A",         # 18: Q2. Monthly Earnings
-                        q2a_val if f_contactable == "Yes" else "N/A",        # 19: Q2a. Kind of Work
-                        q2a_other_val if f_contactable == "Yes" else "",     # 20: Q2a. Others Specify
-                        "; ".join(q2b_selected) if f_contactable == "Yes" else "N/A", # 21: Q2b. Channels
-                        q2b_other_val if f_contactable == "Yes" else "",     # 22: Q2b. Others Specify
-                        q3_val if f_contactable == "Yes" else "N/A",         # 23: Q3. Training Helpfulness
-                        "; ".join(q4_selected) if f_contactable == "Yes" else "N/A",  # 24: Q4. Support Needed
+                        q1_val if is_survey_active else "N/A",               # 17: Q1. Current Status
+                        q2_val if is_survey_active else "N/A",               # 18: Q2. Monthly Earnings
+                        q2a_val if is_survey_active else "N/A",              # 19: Q2a. Kind of Work
+                        q2a_other_val if is_survey_active else "",           # 20: Q2a. Others Specify
+                        "; ".join(q2b_selected) if is_survey_active else "N/A", # 21: Q2b. Channels
+                        q2b_other_val if is_survey_active else "",           # 22: Q2b. Others Specify
+                        q3_val if is_survey_active else "N/A",               # 23: Q3. Training Helpfulness
+                        "; ".join(q4_selected) if is_survey_active else "N/A",  # 24: Q4. Support Needed
                         str(f_vdate),                                        # 25: Verification Date
                         f_spoc_notes                                         # 26: SPOC Remarks
                     ]
