@@ -4,6 +4,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 from datetime import date, datetime
 import hashlib
+import json
 import os
 import re
 import time
@@ -290,8 +291,53 @@ SURVEY_STATUS_OPTIONS = [
 ]
 
 # ==============================================================================
-# 🔑 SESSION STATES & LOOKUP LOGIC
+# 🔑 SESSION STATES, QUEUE PROGRESS PERSISTENCE & LOOKUP LOGIC
 # ==============================================================================
+PROGRESS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "spoc_progress.json")
+
+def load_all_spoc_progress():
+    if os.path.exists(PROGRESS_FILE):
+        try:
+            with open(PROGRESS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def save_spoc_progress(spoc_name, queue_index, phone=""):
+    if not spoc_name:
+        return
+    try:
+        data = load_all_spoc_progress()
+        data[spoc_name.strip().lower()] = {
+            "queue_index": int(queue_index),
+            "phone": str(phone).strip(),
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        with open(PROGRESS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
+
+def get_spoc_saved_index(spoc_name, allocated_numbers):
+    if not spoc_name or not allocated_numbers:
+        return 0
+    data = load_all_spoc_progress()
+    saved = data.get(spoc_name.strip().lower())
+    if not saved:
+        return 0
+    
+    saved_phone = clean_phone(saved.get("phone", ""))
+    if saved_phone:
+        for idx, num in enumerate(allocated_numbers):
+            if clean_phone(num) == saved_phone:
+                return idx
+    
+    saved_idx = saved.get("queue_index", 0)
+    if isinstance(saved_idx, int) and 0 <= saved_idx < len(allocated_numbers):
+        return saved_idx
+    return 0
+
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "user" not in st.session_state:
@@ -300,6 +346,8 @@ if "allocated_numbers" not in st.session_state:
     st.session_state.allocated_numbers = []
 if "queue_index" not in st.session_state:
     st.session_state.queue_index = 0
+if "show_resume_banner" not in st.session_state:
+    st.session_state.show_resume_banner = False
 if "form_version" not in st.session_state:
     st.session_state.form_version = 0
 
@@ -394,10 +442,17 @@ if not st.session_state.logged_in:
                         if str(r.get("SPOC_Name")).strip().lower() == u.strip().lower() and r.get("phone_number")
                     ]
                     st.session_state.allocated_numbers = spoc_numbers
-                    st.session_state.queue_index = 0
+                    
+                    saved_idx = get_spoc_saved_index(u, spoc_numbers)
+                    st.session_state.queue_index = saved_idx
+                    if saved_idx > 0 and saved_idx < len(spoc_numbers):
+                        st.session_state.show_resume_banner = True
+                    else:
+                        st.session_state.show_resume_banner = False
                     
                     if spoc_numbers:
-                        load_student_by_phone(spoc_numbers[0])
+                        target_idx = saved_idx if saved_idx < len(spoc_numbers) else 0
+                        load_student_by_phone(spoc_numbers[target_idx])
                         
                     st.rerun()
                 else:
@@ -436,9 +491,25 @@ else:
         st.session_state.logged_in = False
         st.session_state.allocated_numbers = []
         st.session_state.queue_index = 0
+        st.session_state.show_resume_banner = False
         st.session_state.form_initials = DEFAULT_FORM.copy()
         st.session_state.form_version += 1
         st.rerun()
+
+    # Resume Banner (If SPOC returned after closing tab/shift)
+    if st.session_state.get("show_resume_banner") and total_assigned > 0 and current_idx > 0:
+        res_cols = st.columns([3.2, 1.2, 1.2])
+        res_cols[0].info(f"📍 **Welcome back!** Resumed at Target **#{current_idx + 1}** of {total_assigned} (where you previously stopped).")
+        if res_cols[1].button("▶️ Continue Here", use_container_width=True, type="primary"):
+            st.session_state.show_resume_banner = False
+            save_spoc_progress(st.session_state.user, current_idx, st.session_state.allocated_numbers[current_idx])
+            st.rerun()
+        if res_cols[2].button("⏮️ Start from #1", use_container_width=True):
+            st.session_state.queue_index = 0
+            st.session_state.show_resume_banner = False
+            save_spoc_progress(st.session_state.user, 0, st.session_state.allocated_numbers[0])
+            load_student_by_phone(st.session_state.allocated_numbers[0])
+            st.rerun()
 
     # SECTION 1: QUEUE & FAST PHONE SEARCH NAVIGATOR
  #   st.markdown('<div class="section-card"><div class="form-title">⚡ High Speed Queue & Contact Search</div>', unsafe_allow_html=True)
@@ -555,7 +626,7 @@ else:
     elif total_assigned > 0 and current_idx >= total_assigned:
         st.markdown('<div class="queue-box" style="background: #e6f4ea; border-left-color: #34a853; color: #137333;">🎉 Verification Queue Completed! Great job!</div>', unsafe_allow_html=True)
 
-    c_search, c_fetch, c_prev, c_next, c_clear, c_refresh = st.columns([3, 1.2, 0.9, 0.9, 1.1, 1.1])
+    c_search, c_fetch, c_start, c_prev, c_next, c_clear, c_refresh = st.columns([2.7, 1.2, 0.9, 0.8, 0.8, 1.1, 1.1])
     search_q = c_search.text_input(
         "Search or Paste Contact Number",
         placeholder="Paste student phone number here...",
@@ -571,6 +642,8 @@ else:
                 for idx, num in enumerate(st.session_state.allocated_numbers):
                     if clean_phone(target) == clean_phone(num):
                         st.session_state.queue_index = idx
+                        st.session_state.show_resume_banner = False
+                        save_spoc_progress(st.session_state.user, idx, num)
                         break
             found = load_student_by_phone(target)
             if found:
@@ -580,21 +653,38 @@ else:
             st.rerun()
         else:
             if total_assigned > 0 and current_idx < total_assigned:
-                load_student_by_phone(st.session_state.allocated_numbers[current_idx])
+                phone_num = st.session_state.allocated_numbers[current_idx]
+                save_spoc_progress(st.session_state.user, current_idx, phone_num)
+                load_student_by_phone(phone_num)
                 st.rerun()
+
+    # ⏮️ #1 Button (Start from Beginning)
+    if c_start.button("⏮️ #1", use_container_width=True, help="Jump to Target #1 (Queue beginning)", disabled=(total_assigned == 0 or current_idx == 0)):
+        st.session_state.queue_index = 0
+        st.session_state.show_resume_banner = False
+        save_spoc_progress(st.session_state.user, 0, st.session_state.allocated_numbers[0])
+        load_student_by_phone(st.session_state.allocated_numbers[0])
+        st.toast("Jumped to Target #1!", icon="⏮️")
+        st.rerun()
 
     # ⬅️ Prev Button
     if c_prev.button("⬅️ Prev", use_container_width=True, disabled=(total_assigned == 0 or current_idx <= 0)):
         if current_idx > 0:
             st.session_state.queue_index -= 1
-            load_student_by_phone(st.session_state.allocated_numbers[st.session_state.queue_index])
+            st.session_state.show_resume_banner = False
+            phone_num = st.session_state.allocated_numbers[st.session_state.queue_index]
+            save_spoc_progress(st.session_state.user, st.session_state.queue_index, phone_num)
+            load_student_by_phone(phone_num)
             st.rerun()
 
     # ➡️ Next Button
     if c_next.button("Next ➡️", use_container_width=True, disabled=(total_assigned == 0 or current_idx >= total_assigned - 1)):
         if current_idx < total_assigned - 1:
             st.session_state.queue_index += 1
-            load_student_by_phone(st.session_state.allocated_numbers[st.session_state.queue_index])
+            st.session_state.show_resume_banner = False
+            phone_num = st.session_state.allocated_numbers[st.session_state.queue_index]
+            save_spoc_progress(st.session_state.user, st.session_state.queue_index, phone_num)
+            load_student_by_phone(phone_num)
             st.rerun()
 
     # 🧹 Clear Form
@@ -992,8 +1082,10 @@ else:
                     st.session_state.queue_index += 1
                     if st.session_state.queue_index < len(st.session_state.allocated_numbers):
                         next_phone = st.session_state.allocated_numbers[st.session_state.queue_index]
+                        save_spoc_progress(st.session_state.user, st.session_state.queue_index, next_phone)
                         load_student_by_phone(next_phone)
                     else:
+                        save_spoc_progress(st.session_state.user, st.session_state.queue_index, "")
                         st.session_state.form_initials = DEFAULT_FORM.copy()
                         st.session_state.form_version += 1
                         if len(st.session_state.allocated_numbers) > 0:
