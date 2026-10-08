@@ -342,13 +342,22 @@ def load_all_spoc_progress():
             return {}
     return {}
 
-def save_spoc_progress(spoc_name, queue_index, phone=""):
+def save_spoc_progress(spoc_name, queue_index, phone="", active_call_index=None):
     if not spoc_name:
         return
     try:
         data = load_all_spoc_progress()
-        data[spoc_name.strip().lower()] = {
+        spoc_key = spoc_name.strip().lower()
+        prev = data.get(spoc_key, {})
+        prev_active = prev.get("active_call_index", prev.get("queue_index", queue_index))
+        if active_call_index is None:
+            active_call_index = max(int(queue_index), int(prev_active))
+        else:
+            active_call_index = int(active_call_index)
+
+        data[spoc_key] = {
             "queue_index": int(queue_index),
+            "active_call_index": active_call_index,
             "phone": str(phone).strip(),
             "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
@@ -359,22 +368,45 @@ def save_spoc_progress(spoc_name, queue_index, phone=""):
 
 def get_spoc_saved_index(spoc_name, allocated_numbers):
     if not spoc_name or not allocated_numbers:
-        return 0
+        return 0, 0
     data = load_all_spoc_progress()
     saved = data.get(spoc_name.strip().lower())
     if not saved:
-        return 0
+        return 0, 0
     
+    saved_active = saved.get("active_call_index", saved.get("queue_index", 0))
+    if not isinstance(saved_active, int) or saved_active < 0 or saved_active >= len(allocated_numbers):
+        saved_active = 0
+
     saved_phone = clean_phone(saved.get("phone", ""))
     if saved_phone:
         for idx, num in enumerate(allocated_numbers):
             if clean_phone(num) == saved_phone:
-                return idx
+                return idx, max(idx, saved_active)
     
     saved_idx = saved.get("queue_index", 0)
     if isinstance(saved_idx, int) and 0 <= saved_idx < len(allocated_numbers):
-        return saved_idx
-    return 0
+        return saved_idx, max(saved_idx, saved_active)
+    return 0, saved_active
+
+def get_spoc_highest_verified_index(spoc_name, allocated_numbers):
+    """Finds the maximum queue index verified in Test sheet so progress is never lost"""
+    if not spoc_name or not allocated_numbers:
+        return -1
+    try:
+        rows = fetch_master_data()
+        spoc_clean = spoc_name.strip().lower()
+        alloc_map = {clean_phone(num): idx for idx, num in enumerate(allocated_numbers) if num}
+        highest_idx = -1
+        for r in rows[1:]:
+            if len(r) > 4 and str(r[0]).strip().lower() == spoc_clean:
+                cp = clean_phone(r[4])
+                if cp in alloc_map:
+                    if alloc_map[cp] > highest_idx:
+                        highest_idx = alloc_map[cp]
+        return highest_idx
+    except Exception:
+        return -1
 
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
@@ -384,6 +416,8 @@ if "allocated_numbers" not in st.session_state:
     st.session_state.allocated_numbers = []
 if "queue_index" not in st.session_state:
     st.session_state.queue_index = 0
+if "active_call_index" not in st.session_state:
+    st.session_state.active_call_index = 0
 if "show_resume_banner" not in st.session_state:
     st.session_state.show_resume_banner = False
 if "form_version" not in st.session_state:
@@ -574,16 +608,24 @@ if not st.session_state.logged_in:
                     ]
                     st.session_state.allocated_numbers = spoc_numbers
                     
-                    saved_idx = get_spoc_saved_index(u, spoc_numbers)
-                    st.session_state.queue_index = saved_idx
-                    if saved_idx > 0 and saved_idx < len(spoc_numbers):
+                    saved_idx, saved_active = get_spoc_saved_index(u, spoc_numbers)
+                    highest_verified = get_spoc_highest_verified_index(u, spoc_numbers)
+                    if highest_verified >= 0 and (highest_verified + 1) < len(spoc_numbers):
+                        effective_active = max(saved_active, highest_verified + 1)
+                    else:
+                        effective_active = saved_active
+
+                    st.session_state.active_call_index = effective_active
+                    target_idx = saved_idx if (saved_idx > 0 or effective_active == 0) else effective_active
+                    st.session_state.queue_index = target_idx
+                    if target_idx > 0 and target_idx < len(spoc_numbers):
                         st.session_state.show_resume_banner = True
                     else:
                         st.session_state.show_resume_banner = False
                     
                     if spoc_numbers:
-                        target_idx = saved_idx if saved_idx < len(spoc_numbers) else 0
-                        load_student_by_phone(spoc_numbers[target_idx])
+                        resume_idx = target_idx if target_idx < len(spoc_numbers) else 0
+                        load_student_by_phone(spoc_numbers[resume_idx])
                         
                     st.rerun()
                 else:
@@ -622,6 +664,7 @@ else:
         st.session_state.logged_in = False
         st.session_state.allocated_numbers = []
         st.session_state.queue_index = 0
+        st.session_state.active_call_index = 0
         st.session_state.show_resume_banner = False
         st.session_state.existing_master_row = None
         st.session_state.form_initials = DEFAULT_FORM.copy()
@@ -724,12 +767,12 @@ else:
         res_cols[0].info(f"📍 **Welcome back!** Resumed at Target **#{current_idx + 1}** of {total_assigned} (where you previously stopped).")
         if res_cols[1].button("▶️ Continue Here", use_container_width=True, type="primary"):
             st.session_state.show_resume_banner = False
-            save_spoc_progress(st.session_state.user, current_idx, st.session_state.allocated_numbers[current_idx])
+            save_spoc_progress(st.session_state.user, current_idx, st.session_state.allocated_numbers[current_idx], active_call_index=st.session_state.active_call_index)
             st.rerun()
         if res_cols[2].button("⏮️ Start from #1", use_container_width=True):
             st.session_state.queue_index = 0
             st.session_state.show_resume_banner = False
-            save_spoc_progress(st.session_state.user, 0, st.session_state.allocated_numbers[0])
+            save_spoc_progress(st.session_state.user, 0, st.session_state.allocated_numbers[0], active_call_index=st.session_state.active_call_index)
             load_student_by_phone(st.session_state.allocated_numbers[0])
             st.rerun()
 
@@ -851,36 +894,51 @@ else:
     c_search, c_fetch, c_start, c_prev, c_next, c_clear, c_refresh = st.columns([2.7, 1.2, 0.9, 0.8, 0.8, 1.1, 1.1])
     search_q = c_search.text_input(
         "Search or Paste Contact Number",
-        placeholder="Paste student phone number here...",
+        placeholder="Search phone or enter Target # (e.g. 71, 302)...",
         label_visibility="collapsed"
     )
     
-    # ⚡ Fetch Details
+    # ⚡ Fetch Details / Jump to Target
     if c_fetch.button("⚡ Fetch Details", use_container_width=True, type="primary"):
         target = search_q.strip()
         if target:
-            # Check if this exists in allocation
-            if total_assigned > 0:
-                for idx, num in enumerate(st.session_state.allocated_numbers):
-                    if clean_phone(target) == clean_phone(num):
-                        st.session_state.queue_index = idx
-                        st.session_state.show_resume_banner = False
-                        save_spoc_progress(st.session_state.user, idx, num)
-                        break
-            found, src = load_student_by_phone(target)
-            if found:
-                if src == "master":
-                    row_num = st.session_state.get("existing_master_row")
-                    st.toast(f"Found existing record in Test (Row #{row_num})! Loaded for update.", icon="📝")
-                else:
-                    st.toast("Student record loaded from database!", icon="✅")
+            clean_target_num = target.lstrip("#").strip()
+            # If input is a queue number (e.g. 71, #71, 302, 20, 21...)
+            if clean_target_num.isdigit() and total_assigned > 0 and (1 <= int(clean_target_num) <= total_assigned):
+                target_idx = int(clean_target_num) - 1
+                st.session_state.queue_index = target_idx
+                st.session_state.show_resume_banner = False
+                if target_idx > st.session_state.active_call_index:
+                    st.session_state.active_call_index = target_idx
+                phone_num = st.session_state.allocated_numbers[target_idx]
+                save_spoc_progress(st.session_state.user, target_idx, phone_num, active_call_index=st.session_state.active_call_index)
+                load_student_by_phone(phone_num)
+                st.toast(f"Jumped to Target #{target_idx + 1} ({phone_num})!", icon="🎯")
+                st.rerun()
             else:
-                st.warning("Number not found in Test or Test2 database. Enter details manually.")
-            st.rerun()
+                # Phone lookup
+                if total_assigned > 0:
+                    for idx, num in enumerate(st.session_state.allocated_numbers):
+                        if clean_phone(target) == clean_phone(num):
+                            st.session_state.queue_index = idx
+                            st.session_state.show_resume_banner = False
+                            # Preserve active_call_index so calling position is not lost!
+                            save_spoc_progress(st.session_state.user, idx, num, active_call_index=st.session_state.active_call_index)
+                            break
+                found, src = load_student_by_phone(target)
+                if found:
+                    if src == "master":
+                        row_num = st.session_state.get("existing_master_row")
+                        st.toast(f"Found existing record in Test (Row #{row_num})! Loaded for update.", icon="📝")
+                    else:
+                        st.toast("Student record loaded from database!", icon="✅")
+                else:
+                    st.warning("Number not found in Test or Test2 database. Enter details manually.")
+                st.rerun()
         else:
             if total_assigned > 0 and current_idx < total_assigned:
                 phone_num = st.session_state.allocated_numbers[current_idx]
-                save_spoc_progress(st.session_state.user, current_idx, phone_num)
+                save_spoc_progress(st.session_state.user, current_idx, phone_num, active_call_index=st.session_state.active_call_index)
                 load_student_by_phone(phone_num)
                 st.rerun()
 
@@ -888,7 +946,7 @@ else:
     if c_start.button("⏮️ #1", use_container_width=True, help="Jump to Target #1 (Queue beginning)", disabled=(total_assigned == 0 or current_idx == 0)):
         st.session_state.queue_index = 0
         st.session_state.show_resume_banner = False
-        save_spoc_progress(st.session_state.user, 0, st.session_state.allocated_numbers[0])
+        save_spoc_progress(st.session_state.user, 0, st.session_state.allocated_numbers[0], active_call_index=st.session_state.active_call_index)
         load_student_by_phone(st.session_state.allocated_numbers[0])
         st.toast("Jumped to Target #1!", icon="⏮️")
         st.rerun()
@@ -899,7 +957,7 @@ else:
             st.session_state.queue_index -= 1
             st.session_state.show_resume_banner = False
             phone_num = st.session_state.allocated_numbers[st.session_state.queue_index]
-            save_spoc_progress(st.session_state.user, st.session_state.queue_index, phone_num)
+            save_spoc_progress(st.session_state.user, st.session_state.queue_index, phone_num, active_call_index=st.session_state.active_call_index)
             load_student_by_phone(phone_num)
             st.rerun()
 
@@ -908,10 +966,53 @@ else:
         if current_idx < total_assigned - 1:
             st.session_state.queue_index += 1
             st.session_state.show_resume_banner = False
+            if st.session_state.queue_index > st.session_state.active_call_index:
+                st.session_state.active_call_index = st.session_state.queue_index
             phone_num = st.session_state.allocated_numbers[st.session_state.queue_index]
-            save_spoc_progress(st.session_state.user, st.session_state.queue_index, phone_num)
+            save_spoc_progress(st.session_state.user, st.session_state.queue_index, phone_num, active_call_index=st.session_state.active_call_index)
             load_student_by_phone(phone_num)
             st.rerun()
+
+    # 🎯 Direct Queue Jump & Resume Latest Call Toolbar (Image 2)
+    if total_assigned > 0:
+        st.markdown("<div style='margin-top: 4px; margin-bottom: 8px;'></div>", unsafe_allow_html=True)
+        cj_lbl, cj_inp, cj_btn, cj_latest = st.columns([1.6, 1.6, 1.4, 3.4])
+        with cj_lbl:
+            st.markdown("<div style='padding-top: 8px; font-weight: 700; color: #1e3a8a; font-size: 0.95rem;'>🎯 Jump to Queue #:</div>", unsafe_allow_html=True)
+        with cj_inp:
+            jump_input_val = st.number_input(
+                "Queue Target Number",
+                min_value=1,
+                max_value=total_assigned,
+                value=min(current_idx + 1, total_assigned),
+                step=1,
+                label_visibility="collapsed",
+                key="num_jump_target_input"
+            )
+        with cj_btn:
+            if st.button("🚀 Jump", use_container_width=True, help="Jump directly to chosen target number (e.g. 20, 21, 71, 302...)"):
+                chosen_idx = int(jump_input_val) - 1
+                st.session_state.queue_index = chosen_idx
+                st.session_state.show_resume_banner = False
+                if chosen_idx > st.session_state.active_call_index:
+                    st.session_state.active_call_index = chosen_idx
+                p_num = st.session_state.allocated_numbers[chosen_idx]
+                save_spoc_progress(st.session_state.user, chosen_idx, p_num, active_call_index=st.session_state.active_call_index)
+                load_student_by_phone(p_num)
+                st.toast(f"Jumped to Target #{chosen_idx + 1}!", icon="🎯")
+                st.rerun()
+        with cj_latest:
+            active_target_display = min(st.session_state.active_call_index + 1, total_assigned)
+            is_at_latest = (current_idx == st.session_state.active_call_index)
+            latest_label = f"📍 At Latest Call: Target #{active_target_display}" if is_at_latest else f"⚡ Resume Latest Call: Target #{active_target_display}"
+            if st.button(latest_label, use_container_width=True, type="secondary" if is_at_latest else "primary", help=f"Jump directly to your active calling target (#{active_target_display})"):
+                st.session_state.queue_index = st.session_state.active_call_index
+                st.session_state.show_resume_banner = False
+                p_num = st.session_state.allocated_numbers[st.session_state.queue_index]
+                save_spoc_progress(st.session_state.user, st.session_state.queue_index, p_num, active_call_index=st.session_state.active_call_index)
+                load_student_by_phone(p_num)
+                st.toast(f"Jumped to Latest Call Target #{active_target_display}!", icon="⚡")
+                st.rerun()
 
     # 🧹 Clear Form
     if c_clear.button("🧹 Clear Form", use_container_width=True):
@@ -1386,6 +1487,8 @@ else:
                                     target_row = i + 1
                                     break
 
+                    is_update_record = bool(target_row)
+
                     if target_row:
                         sheets["master"].update(values=[payload], range_name=f"A{target_row}:Z{target_row}")
                         st.cache_data.clear()
@@ -1398,22 +1501,128 @@ else:
                         st.success(f"✅ Record for {f_name} ({f_phone}) saved successfully to Google Sheet 'Test'!")
                     
                     # Queue progression
-                    st.session_state.queue_index += 1
-                    if st.session_state.queue_index < len(st.session_state.allocated_numbers):
-                        next_phone = st.session_state.allocated_numbers[st.session_state.queue_index]
-                        save_spoc_progress(st.session_state.user, st.session_state.queue_index, next_phone)
-                        load_student_by_phone(next_phone)
+                    if is_update_record:
+                        # 🎯 FIX FOR UPDATE QUEUE RESET ISSUE:
+                        # Updating a student's details must NOT advance queue to edited_idx + 1 (e.g. Queue 2).
+                        # Return SPOC back to their active calling target (e.g. Call #71)!
+                        target_resume_idx = st.session_state.get("active_call_index", st.session_state.queue_index)
+                        if total_assigned > 0 and target_resume_idx < total_assigned:
+                            st.session_state.queue_index = target_resume_idx
+                            next_phone = st.session_state.allocated_numbers[target_resume_idx]
+                            save_spoc_progress(st.session_state.user, target_resume_idx, next_phone, active_call_index=target_resume_idx)
+                            load_student_by_phone(next_phone)
+                            st.toast(f"Update saved! Returned to active calling queue: Target #{target_resume_idx + 1}", icon="🎯")
+                        else:
+                            st.session_state.form_initials = DEFAULT_FORM.copy()
+                            st.session_state.form_version += 1
                     else:
-                        save_spoc_progress(st.session_state.user, st.session_state.queue_index, "")
-                        st.session_state.form_initials = DEFAULT_FORM.copy()
-                        st.session_state.form_version += 1
-                        if len(st.session_state.allocated_numbers) > 0:
-                            st.balloons()
+                        # Normal sequential verification call
+                        st.session_state.queue_index += 1
+                        if st.session_state.queue_index > st.session_state.active_call_index:
+                            st.session_state.active_call_index = st.session_state.queue_index
+
+                        if st.session_state.queue_index < len(st.session_state.allocated_numbers):
+                            next_phone = st.session_state.allocated_numbers[st.session_state.queue_index]
+                            save_spoc_progress(st.session_state.user, st.session_state.queue_index, next_phone, active_call_index=st.session_state.active_call_index)
+                            load_student_by_phone(next_phone)
+                        else:
+                            save_spoc_progress(st.session_state.user, st.session_state.queue_index, "", active_call_index=st.session_state.active_call_index)
+                            st.session_state.form_initials = DEFAULT_FORM.copy()
+                            st.session_state.form_version += 1
+                            if len(st.session_state.allocated_numbers) > 0:
+                                st.balloons()
                             
                     time.sleep(0.4)
                     st.rerun()
                 except Exception as ex:
                     st.error(f"Error appending row to Google Sheets: {ex}")
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # ==========================================================================
+    # 📋 SECTION: SPOC WISE LATEST 5 CALLS WITH QUEUE NUMBER (Z-A)
+    # ==========================================================================
+    st.markdown("""
+        <div class="section-card" style="margin-top: 1.2rem; border-top: 4px solid #1a73e8;">
+    """, unsafe_allow_html=True)
+
+    all_master_rows = fetch_master_data()
+    current_spoc_clean = st.session_state.user.strip().lower()
+
+    # Filter rows for currently logged-in SPOC
+    spoc_records = []
+    if len(all_master_rows) > 1:
+        for r_i, r_data in enumerate(all_master_rows[1:], start=2): # 1-based Google Sheet row index
+            if len(r_data) > 0 and str(r_data[0]).strip().lower() == current_spoc_clean:
+                spoc_records.append((r_i, r_data))
+
+    # Z-A: Newest / latest call first (reverse order)
+    latest_5_calls = list(reversed(spoc_records))[:5]
+
+    col_h1, col_h2 = st.columns([3.5, 1.5])
+    with col_h1:
+        st.markdown(f'<div class="form-title">📋 SPOC Calling History: Latest 5 Calls (Z-A / Newest First) — {st.session_state.user}</div>', unsafe_allow_html=True)
+    with col_h2:
+        st.markdown(f"<div style='text-align: right; color: #64748b; font-size: 0.9rem; font-weight: 600; padding-top: 4px;'>Showing newest <b>{len(latest_5_calls)}</b> of <b>{len(spoc_records)}</b> verified</div>", unsafe_allow_html=True)
+
+    if not latest_5_calls:
+        st.info(f"💡 No verified calls submitted yet for {st.session_state.user}. When you submit verifications, your latest 5 calls with their Queue Numbers will appear here.")
+    else:
+        for idx_call, (sheet_row_num, row_data) in enumerate(latest_5_calls):
+            c_student_name = row_data[2].strip() if len(row_data) > 2 else "N/A"
+            c_cmis = row_data[3].strip() if len(row_data) > 3 else "N/A"
+            c_phone = row_data[4].strip() if len(row_data) > 4 else "N/A"
+            c_contactable = row_data[14].strip() if len(row_data) > 14 else "N/A"
+            c_remarks = row_data[15].strip() if len(row_data) > 15 else "N/A"
+            c_vdate = row_data[24].strip() if len(row_data) > 24 else ""
+            c_notes = row_data[25].strip() if len(row_data) > 25 else ""
+            
+            # Determine Queue Number by matching phone with allocated_numbers
+            c_clean_phone = clean_phone(c_phone)
+            q_num_str = "N/A"
+            if c_clean_phone and st.session_state.allocated_numbers:
+                for q_idx, a_phone in enumerate(st.session_state.allocated_numbers):
+                    if clean_phone(a_phone) == c_clean_phone:
+                        q_num_str = f"#{q_idx + 1}"
+                        break
+            
+            # Color badge for call outcome
+            if "Connected" in c_remarks:
+                rem_badge_style = "background: #e6f4ea; color: #137333; border: 1px solid #ceead6;"
+            elif any(k in c_remarks for k in ["Ringing", "Call Back"]):
+                rem_badge_style = "background: #fef7e0; color: #b06000; border: 1px solid #feefc3;"
+            else:
+                rem_badge_style = "background: #fce8e6; color: #c5221f; border: 1px solid #fad2cf;"
+            
+            c_col1, c_col2, c_col3, c_col4, c_col5 = st.columns([1.1, 2.3, 1.6, 2.3, 1.2])
+            with c_col1:
+                st.markdown(f"""
+                <div style="background: #e8f0fe; border-left: 4px solid #1a73e8; padding: 6px 10px; border-radius: 6px;">
+                    <span style="font-size: 0.72rem; color: #5f6368; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;">Queue No</span><br>
+                    <strong style="color: #1a73e8; font-size: 1.1rem;">{q_num_str}</strong>
+                </div>
+                """, unsafe_allow_html=True)
+            with c_col2:
+                st.markdown(f"**{c_student_name}**<br><span style='color: #64748b; font-size: 0.83rem;'>CMIS: {c_cmis}</span>", unsafe_allow_html=True)
+            with c_col3:
+                st.markdown(f"📞 `{c_phone}`<br><span style='color: #64748b; font-size: 0.82rem;'>📅 {c_vdate}</span>", unsafe_allow_html=True)
+            with c_col4:
+                notes_snippet = f" | {c_notes[:35]}..." if c_notes else ""
+                st.markdown(f"""
+                <span style="display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.83rem; font-weight: 700; {rem_badge_style}">
+                    {c_remarks}
+                </span><br>
+                <span style='color: #64748b; font-size: 0.82rem;'>Contactable: {c_contactable}{notes_snippet}</span>
+                """, unsafe_allow_html=True)
+            with c_col5:
+                if st.button("✏️ Load / Edit", key=f"btn_hist_{sheet_row_num}_{idx_call}", use_container_width=True, help="Load this student record in Update Mode"):
+                    found, src = load_student_by_phone(c_phone)
+                    st.session_state.existing_master_row = sheet_row_num
+                    st.toast(f"Loaded {c_student_name} (Queue {q_num_str}) in Update Mode (Row #{sheet_row_num})!", icon="📝")
+                    st.rerun()
+            
+            if idx_call < len(latest_5_calls) - 1:
+                st.markdown("<hr style='margin: 8px 0; border: none; border-top: 1px solid #f1f5f9;'>", unsafe_allow_html=True)
 
     st.markdown('</div>', unsafe_allow_html=True)
 
