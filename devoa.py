@@ -535,7 +535,7 @@ def load_student_by_phone(phone_target):
             "q3": row[22].strip() if row[22].strip() != "N/A" else "",
             "q4_selected": q4_list,
             "secc_status": secc_stat,
-            "vdate": row[24].strip() if row[24].strip() else str(date.today()),
+            "vdate": date.today(),
             "spoc_notes": row[25].strip()
         }
         st.session_state.form_version += 1
@@ -1369,17 +1369,10 @@ else:
     # ==========================================================================
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     f_sub1, f_sub2 = st.columns([1.5, 3.5])
-    init_vdate = init.get("vdate")
-    if isinstance(init_vdate, str) and init_vdate:
-        try:
-            init_vdate = datetime.strptime(init_vdate, "%Y-%m-%d").date()
-        except Exception:
-            init_vdate = date.today()
-    elif not isinstance(init_vdate, (date, datetime)):
-        init_vdate = date.today()
+    init_vdate = date.today()
 
     with f_sub1:
-        f_vdate = st.date_input("Verification Date", value=init_vdate, key=f"inp_vdate_{ver}")
+        f_vdate = st.date_input("Verification Date", value=init_vdate, disabled=True, key=f"inp_vdate_{ver}")
     with f_sub2:
         f_spoc_notes = st.text_input("SPOC Notes / Calling Remarks", value=init.get("spoc_notes", ""), placeholder="Any additional notes or observations...", key=f"inp_notes_{ver}")
 
@@ -1470,7 +1463,7 @@ else:
                         q2b_other_val if is_survey_active else "",           # 22: Q2b. Others Specify
                         q3_val if (is_survey_active and q3_val) else "N/A",  # 23: Q3. Training Helpfulness
                         "; ".join(q4_selected) if (is_survey_active and q4_selected) else "N/A",  # 24: Q4. Support Needed
-                        str(f_vdate),                                        # 25: Verification Date
+                        str(f_vdate or date.today()),                                        # 25: Verification Date
                         f_spoc_notes                                         # 26: SPOC Remarks
                     ]
                     
