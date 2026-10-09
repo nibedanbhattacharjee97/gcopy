@@ -221,7 +221,7 @@ def fetch_auth_data():
 def fetch_allocation_data():
     return sheets["allocation"].get_all_records()
 
-@st.cache_data(ttl=20)
+@st.cache_data(ttl=300)
 def fetch_master_data():
     """Fetches all rows from Test verification sheet to check for existing submissions"""
     try:
@@ -305,10 +305,12 @@ def check_phone_ownership(phone_val, current_spoc):
     # Not found in allocation or master -> unassigned/free
     return {"is_my_number": True, "owner_spoc": current_spoc, "source": "Unassigned", "phone": str(phone_val or "")}
 
+@st.cache_data(ttl=300)
 def compute_scope_stats(scope_target="ALL"):
     """
     Computes (assigned, called, yes, no, fresh_pending, contactable_pct)
     for either 'ALL' (Team Total) or a specific SPOC name (case-insensitive).
+    Cached in RAM (invalidated automatically on submit/refresh).
     """
     try:
         alloc_data = fetch_allocation_data()
@@ -352,79 +354,6 @@ def compute_scope_stats(scope_target="ALL"):
             return tot_assigned, tot_called, tot_yes, tot_no, tot_pending, tot_rate
     except Exception:
         return 0, 0, 0, 0, 0, 0.0
-
-@st.cache_data(ttl=60)
-def get_all_employees_summary():
-    """Calculates Total Assigned, Yes, No, Total Called, Fresh Pending, and Contactable % for each employee"""
-    try:
-        alloc_data = fetch_allocation_data()
-        master_data = fetch_master_data()
-        
-        spoc_assigned = {}
-        for r in alloc_data:
-            s_name = str(r.get("SPOC_Name") or r.get("spoc_name") or r.get("SPOC Name") or "").strip()
-            if s_name:
-                s_canon = s_name.title()
-                spoc_assigned[s_canon] = spoc_assigned.get(s_canon, 0) + 1
-                
-        spoc_yes = {}
-        spoc_no = {}
-        if len(master_data) > 1:
-            for r in master_data[1:]:
-                if len(r) > 14 and r[0]:
-                    s_canon = str(r[0]).strip().title()
-                    cont = str(r[14]).strip().lower()
-                    if cont == "yes":
-                        spoc_yes[s_canon] = spoc_yes.get(s_canon, 0) + 1
-                    elif cont == "no":
-                        spoc_no[s_canon] = spoc_no.get(s_canon, 0) + 1
-                        
-        all_spocs = sorted(list(set(list(spoc_assigned.keys()) + list(spoc_yes.keys()) + list(spoc_no.keys()))))
-        
-        summary = []
-        tot_all_assigned = 0
-        tot_all_called = 0
-        tot_all_yes = 0
-        tot_all_no = 0
-        tot_all_pending = 0
-
-        for s in all_spocs:
-            tot = spoc_assigned.get(s, 0)
-            y = spoc_yes.get(s, 0)
-            n = spoc_no.get(s, 0)
-            called = y + n
-            pending = max(0, tot - called) if tot > 0 else 0
-            rate = (y / called * 100.0) if called > 0 else 0.0
-            
-            tot_all_assigned += tot
-            tot_all_called += called
-            tot_all_yes += y
-            tot_all_no += n
-            tot_all_pending += pending
-            
-            summary.append({
-                "SPOC Name": s,
-                "Assigned (Test3)": tot,
-                "Called (Yes+No)": called,
-                "Yes (Contacted)": y,
-                "No (Unreached)": n,
-                "Fresh Pending": pending,
-                "Contactable %": f"{rate:.1f}%"
-            })
-
-        total_rate = (tot_all_yes / tot_all_called * 100.0) if tot_all_called > 0 else 0.0
-        summary.append({
-            "SPOC Name": "🌟 TOTAL (ALL TEAM)",
-            "Assigned (Test3)": tot_all_assigned,
-            "Called (Yes+No)": tot_all_called,
-            "Yes (Contacted)": tot_all_yes,
-            "No (Unreached)": tot_all_no,
-            "Fresh Pending": tot_all_pending,
-            "Contactable %": f"{total_rate:.1f}%"
-        })
-        return summary
-    except Exception:
-        return []
 
 
 
@@ -1012,43 +941,45 @@ else:
     # ==========================================================================
     # 📊 OPERATIONAL PERFORMANCE BOARDS (Board 1: Fresh Calls Pending | Board 2: % of Yes)
     # ==========================================================================
-    alloc_raw_data = fetch_allocation_data()
-    all_alloc_spoc_list = sorted(list({str(r.get("SPOC_Name") or "").strip().title() for r in alloc_raw_data if r.get("SPOC_Name")}))
-    
-    logged_user_title = st.session_state.user.strip().title()
-    logged_user_has_alloc = (logged_user_title in all_alloc_spoc_list)
+    # Admin roles check (Nibedan, Pritam, Kalpana, Tushar)
+    ADMIN_USERS = {"nibedan", "pritam", "kalpana", "tushar"}
+    is_admin = st.session_state.user.strip().lower() in ADMIN_USERS
 
-    if logged_user_has_alloc:
-        view_options = [f"👤 My Personal Stats ({logged_user_title})", "🌟 All Team Combined (Portal Total)"] + [s for s in all_alloc_spoc_list if s != logged_user_title]
-        def_view_idx = 0
-    else:
+    if is_admin:
+        # Admins can select between Team Total and any individual SPOC
+        alloc_raw_data = fetch_allocation_data()
+        all_alloc_spoc_list = sorted(list({str(r.get("SPOC_Name") or "").strip().title() for r in alloc_raw_data if r.get("SPOC_Name")}))
         view_options = ["🌟 All Team Combined (Portal Total)"] + all_alloc_spoc_list
-        def_view_idx = 0
 
-    col_view_lbl, col_view_sel = st.columns([1.6, 2.4])
-    with col_view_lbl:
-        st.markdown("<div style='padding-top: 6px; font-weight: 800; color: #0f4c81; font-size: 1.05rem;'>📊 Select Performance View:</div>", unsafe_allow_html=True)
-    with col_view_sel:
-        selected_perf_view = st.selectbox(
-            "Select Performance View",
-            view_options,
-            index=def_view_idx,
-            label_visibility="collapsed",
-            key="perf_view_selector_box"
-        )
+        col_view_lbl, col_view_sel = st.columns([1.6, 2.4])
+        with col_view_lbl:
+            st.markdown("<div style='padding-top: 6px; font-weight: 800; color: #0f4c81; font-size: 1.05rem;'>📊 Select Performance View:</div>", unsafe_allow_html=True)
+        with col_view_sel:
+            selected_perf_view = st.selectbox(
+                "Select Performance View",
+                view_options,
+                index=0,
+                label_visibility="collapsed",
+                key="perf_view_selector_box"
+            )
 
-    # Compute stats based on selection
-    if selected_perf_view == "🌟 All Team Combined (Portal Total)":
-        stat_scope = "ALL"
-        display_scope_name = "All Team Combined"
-    elif selected_perf_view.startswith("👤 My Personal Stats"):
-        stat_scope = logged_user_title
-        display_scope_name = logged_user_title
+        if selected_perf_view == "🌟 All Team Combined (Portal Total)":
+            stat_scope = "ALL"
+            display_scope_name = "All Team Combined"
+        else:
+            stat_scope = selected_perf_view
+            display_scope_name = selected_perf_view
+
+        v_assigned, v_called, v_yes, v_no, v_pending, v_rate = compute_scope_stats(stat_scope)
     else:
-        stat_scope = selected_perf_view
-        display_scope_name = selected_perf_view
-
-    v_assigned, v_called, v_yes, v_no, v_pending, v_rate = compute_scope_stats(stat_scope)
+        # Regular SPOC callers: ZERO overhead, NO dropdown, view their respective calculation directly
+        v_assigned = total_assigned
+        v_called = spoc_total_called
+        v_yes = spoc_yes_count
+        v_no = spoc_no_count
+        v_pending = spoc_fresh_pending
+        v_rate = spoc_contactable_pct
+        display_scope_name = st.session_state.user
 
     col_b1, col_b2 = st.columns(2)
     with col_b1:
@@ -1097,13 +1028,6 @@ else:
 </div>
 </div>"""
         st.markdown(b2_card, unsafe_allow_html=True)
-
-    with st.expander("👥 View Team-Wide Fresh Calls & Contactability Summary (All Employees)", expanded=False):
-        team_summary = get_all_employees_summary()
-        if team_summary:
-            st.dataframe(team_summary, use_container_width=True, hide_index=True)
-        else:
-            st.info("No employee allocation data available.")
 
     # SECTION 1: QUEUE & FAST PHONE SEARCH NAVIGATOR
  #   st.markdown('<div class="section-card"><div class="form-title">⚡ High Speed Queue & Contact Search</div>', unsafe_allow_html=True)
