@@ -244,6 +244,116 @@ def find_master_record_by_phone(phone_target):
                 return r, i + 1
     return None, None
 
+@st.cache_data(ttl=300)
+def get_phone_allocation_map():
+    """Maps clean 10-digit phone number -> allocated SPOC name from Test3 allocation sheet"""
+    try:
+        records = fetch_allocation_data()
+        mapping = {}
+        for r in records:
+            p_raw = r.get("phone_number") or r.get("Phone_Number") or r.get("Contact Number") or r.get("phone")
+            spoc_raw = r.get("SPOC_Name") or r.get("spoc_name") or r.get("SPOC Name") or r.get("SPOC")
+            p_clean = clean_phone(p_raw)
+            if p_clean and spoc_raw:
+                mapping[p_clean] = str(spoc_raw).strip()
+        return mapping
+    except Exception:
+        return {}
+
+def check_phone_ownership(phone_val, current_spoc):
+    """
+    Checks who owns a phone number:
+    1. Checks Test3 allocation
+    2. Checks Test master sheet (if already verified by someone)
+    Returns:
+      {
+        'is_my_number': bool,
+        'owner_spoc': str,
+        'source': str,
+        'phone': str
+      }
+    """
+    cleaned = clean_phone(phone_val)
+    cur_clean = (current_spoc or "").strip().lower()
+    if not cleaned or not cur_clean:
+        return {"is_my_number": True, "owner_spoc": current_spoc, "source": "Unassigned", "phone": str(phone_val or "")}
+
+    # 1. Check Test3 Allocation Sheet
+    alloc_map = get_phone_allocation_map()
+    alloc_owner = alloc_map.get(cleaned)
+    if alloc_owner:
+        is_mine = (alloc_owner.strip().lower() == cur_clean)
+        return {
+            "is_my_number": is_mine,
+            "owner_spoc": alloc_owner.strip(),
+            "source": "Test3 Allocation",
+            "phone": str(phone_val or "")
+        }
+
+    # 2. Check Test Master Sheet
+    master_rec, _ = find_master_record_by_phone(cleaned)
+    if master_rec and len(master_rec) > 0 and str(master_rec[0]).strip():
+        master_owner = str(master_rec[0]).strip()
+        is_mine = (master_owner.lower() == cur_clean)
+        return {
+            "is_my_number": is_mine,
+            "owner_spoc": master_owner,
+            "source": "Test Master Sheet",
+            "phone": str(phone_val or "")
+        }
+
+    # Not found in allocation or master -> unassigned/free
+    return {"is_my_number": True, "owner_spoc": current_spoc, "source": "Unassigned", "phone": str(phone_val or "")}
+
+@st.cache_data(ttl=60)
+def get_all_employees_summary():
+    """Calculates Total Assigned, Yes, No, Total Called, Fresh Pending, and Contactable % for each employee"""
+    try:
+        alloc_data = fetch_allocation_data()
+        master_data = fetch_master_data()
+        
+        spoc_assigned = {}
+        for r in alloc_data:
+            s_name = str(r.get("SPOC_Name") or r.get("spoc_name") or r.get("SPOC Name") or "").strip()
+            if s_name:
+                spoc_assigned[s_name] = spoc_assigned.get(s_name, 0) + 1
+                
+        spoc_yes = {}
+        spoc_no = {}
+        if len(master_data) > 1:
+            for r in master_data[1:]:
+                if len(r) > 14 and r[0]:
+                    s_name = str(r[0]).strip()
+                    cont = str(r[14]).strip().lower()
+                    if cont == "yes":
+                        spoc_yes[s_name] = spoc_yes.get(s_name, 0) + 1
+                    elif cont == "no":
+                        spoc_no[s_name] = spoc_no.get(s_name, 0) + 1
+                        
+        all_spocs = sorted(list(set(list(spoc_assigned.keys()) + list(spoc_yes.keys()) + list(spoc_no.keys()))), key=lambda x: x.lower())
+        
+        summary = []
+        for s in all_spocs:
+            tot = spoc_assigned.get(s, 0)
+            y = spoc_yes.get(s, 0)
+            n = spoc_no.get(s, 0)
+            called = y + n
+            pending = max(0, tot - called) if tot > 0 else 0
+            rate = (y / called * 100.0) if called > 0 else 0.0
+            summary.append({
+                "SPOC Name": s,
+                "Assigned (Test3)": tot,
+                "Called (Yes+No)": called,
+                "Yes (Contacted)": y,
+                "No (Unreached)": n,
+                "Fresh Pending": pending,
+                "Contactable %": f"{rate:.1f}%"
+            })
+        return summary
+    except Exception:
+        return []
+
+
 # ==============================================================================
 # 📋 QUESTIONNAIRE SPECIFICATIONS (Page 3 of Survey Protocol)
 # ==============================================================================
@@ -424,6 +534,9 @@ if "form_version" not in st.session_state:
     st.session_state.form_version = 0
 if "existing_master_row" not in st.session_state:
     st.session_state.existing_master_row = None
+if "phone_ownership_alert" not in st.session_state:
+    st.session_state.phone_ownership_alert = None
+
 
 DEFAULT_FORM = {
     "cmis": "",
@@ -645,14 +758,51 @@ if not st.session_state.logged_in:
 # 🏠 MAIN OPERATIONAL DASHBOARD
 # ==============================================================================
 else:
-    # Sidebar
-    st.sidebar.markdown(f"### 👤 Logged In: **{st.session_state.user}**")
+    all_master_rows = fetch_master_data()
+    master_headers = all_master_rows[0] if (all_master_rows and len(all_master_rows) > 0) else EXPECTED_HEADERS
+    current_spoc_clean = st.session_state.user.strip().lower()
+    
+    raw_spoc_rows = []
+    if len(all_master_rows) > 1:
+        raw_spoc_rows = [
+            r for r in all_master_rows[1:] 
+            if len(r) > 0 and str(r[0]).strip().lower() == current_spoc_clean
+        ]
+        
     total_assigned = len(st.session_state.allocated_numbers)
     current_idx = st.session_state.queue_index
     
+    # --------------------------------------------------------------------------
+    # 📊 PERFORMANCE & PIPELINE CALCULATIONS (Respective Employee)
+    # --------------------------------------------------------------------------
+    spoc_yes_count = sum(1 for r in raw_spoc_rows if len(r) > 14 and str(r[14]).strip().lower() == "yes")
+    spoc_no_count = sum(1 for r in raw_spoc_rows if len(r) > 14 and str(r[14]).strip().lower() == "no")
+    spoc_total_called = spoc_yes_count + spoc_no_count
+    
+    # Board 1: Fresh Calls Pending = Total Assigned - Total Called (Yes + No)
+    spoc_fresh_pending = max(0, total_assigned - spoc_total_called) if total_assigned > 0 else 0
+    
+    # Board 2: % of Yes (Contactability Rate) = (Yes / Total Called) * 100
+    if spoc_total_called > 0:
+        spoc_contactable_pct = (spoc_yes_count / spoc_total_called) * 100.0
+    else:
+        spoc_contactable_pct = 0.0
+
+    # Sidebar
+    st.sidebar.markdown(f"### 👤 Logged In: **{st.session_state.user}**")
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 📋 Verification Queue")
-    st.sidebar.metric(label="Assigned in Test3", value=total_assigned)
+    
+    col_sb1, col_sb2 = st.sidebar.columns(2)
+    col_sb1.metric(label="🎯 Assigned", value=total_assigned)
+    col_sb2.metric(label="⏳ Fresh Pending", value=spoc_fresh_pending, delta=f"-{spoc_total_called} called", delta_color="inverse")
+    
+    col_sb3, col_sb4 = st.sidebar.columns(2)
+    col_sb3.metric(label="📞 Contactable %", value=f"{spoc_contactable_pct:.1f}%")
+    col_sb4.metric(label="✅ Contacted (Yes)", value=spoc_yes_count)
+    
+    st.sidebar.caption(f"📊 Calls: **{spoc_total_called}** (Yes: **{spoc_yes_count}**, No: **{spoc_no_count}**)")
+
     if total_assigned > 0:
         progress_val = min(current_idx / total_assigned, 1.0)
         st.sidebar.progress(progress_val)
@@ -667,9 +817,11 @@ else:
         st.session_state.active_call_index = 0
         st.session_state.show_resume_banner = False
         st.session_state.existing_master_row = None
+        st.session_state.phone_ownership_alert = None
         st.session_state.form_initials = DEFAULT_FORM.copy()
         st.session_state.form_version += 1
         st.rerun()
+
 
     # ==========================================================================
     # 📥 SPOC VERIFIED DATA EXPORT & FILTERS (Sidebar)
@@ -703,18 +855,8 @@ else:
     )
 
     # 3. Filter Master Records for this SPOC
-    all_master_rows = fetch_master_data()
-    master_headers = all_master_rows[0] if (all_master_rows and len(all_master_rows) > 0) else EXPECTED_HEADERS
-    
-    current_spoc_clean = st.session_state.user.strip().lower()
-    raw_spoc_rows = []
-    if len(all_master_rows) > 1:
-        raw_spoc_rows = [
-            r for r in all_master_rows[1:] 
-            if len(r) > 0 and str(r[0]).strip().lower() == current_spoc_clean
-        ]
-
     filtered_export_rows = []
+
     for r in raw_spoc_rows:
         # Date Filter Check (Col Y: index 24)
         row_date_str = str(r[24]).strip() if len(r) > 24 else ""
@@ -775,6 +917,81 @@ else:
             save_spoc_progress(st.session_state.user, 0, st.session_state.allocated_numbers[0], active_call_index=st.session_state.active_call_index)
             load_student_by_phone(st.session_state.allocated_numbers[0])
             st.rerun()
+
+    # ==========================================================================
+    # 📊 OPERATIONAL PERFORMANCE BOARDS (Board 1: Fresh Calls Pending | Board 2: % of Yes)
+    # ==========================================================================
+    st.markdown(f"""
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 1.1rem;">
+        <!-- BOARD 1: FRESH CALLS PENDING -->
+        <div style="background: linear-gradient(135deg, #f0fdf4 0%, #ffffff 100%); border: 1.5px solid #86efac; border-left: 6px solid #16a34a; border-radius: 12px; padding: 14px 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.04);">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                <div>
+                    <span style="font-size: 0.78rem; font-weight: 700; color: #166534; text-transform: uppercase; letter-spacing: 0.5px;">
+                        📋 Board 1: Calling Pipeline ({st.session_state.user})
+                    </span>
+                    <div style="display: flex; align-items: baseline; gap: 10px; margin-top: 4px;">
+                        <span style="font-size: 2.2rem; font-weight: 900; color: #15803d; line-height: 1;">
+                            {spoc_fresh_pending}
+                        </span>
+                        <span style="font-size: 1.05rem; font-weight: 800; color: #166534;">
+                            Fresh Calls Pending
+                        </span>
+                    </div>
+                </div>
+                <span style="background: #dcfce7; color: #15803d; border: 1px solid #bbf7d0; padding: 4px 10px; border-radius: 20px; font-size: 0.8rem; font-weight: 700;">
+                    Target: {total_assigned}
+                </span>
+            </div>
+            <div style="margin-top: 10px; padding-top: 10px; border-top: 1px dashed #bbf7d0; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; font-size: 0.86rem;">
+                <span style="color: #374151;">Total Assigned: <b>{total_assigned}</b></span>
+                <span style="color: #2563eb;">Total Called: <b>{spoc_total_called}</b></span>
+                <span style="color: #16a34a;">Yes (Contacted): <b>{spoc_yes_count}</b></span>
+                <span style="color: #dc2626;">No (Unreached): <b>{spoc_no_count}</b></span>
+            </div>
+            <div style="margin-top: 6px; font-size: 0.77rem; color: #6b7280;">
+                💡 <b>Calculation:</b> Total Calls ({total_assigned}) − Called ({spoc_total_called}) [Yes: {spoc_yes_count} + No: {spoc_no_count}] = <b>{spoc_fresh_pending} Fresh Pending</b>
+            </div>
+        </div>
+
+        <!-- BOARD 2: % OF YES (CONTACTABILITY) -->
+        <div style="background: linear-gradient(135deg, #eff6ff 0%, #ffffff 100%); border: 1.5px solid #93c5fd; border-left: 6px solid #2563eb; border-radius: 12px; padding: 14px 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.04);">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                <div>
+                    <span style="font-size: 0.78rem; font-weight: 700; color: #1e40af; text-transform: uppercase; letter-spacing: 0.5px;">
+                        🎯 Board 2: Contactability Rate ({st.session_state.user})
+                    </span>
+                    <div style="display: flex; align-items: baseline; gap: 10px; margin-top: 4px;">
+                        <span style="font-size: 2.2rem; font-weight: 900; color: #1d4ed8; line-height: 1;">
+                            {spoc_contactable_pct:.1f}%
+                        </span>
+                        <span style="font-size: 1.05rem; font-weight: 800; color: #1e40af;">
+                            Contactable (% of Yes)
+                        </span>
+                    </div>
+                </div>
+                <span style="background: #dbeafe; color: #1d4ed8; border: 1px solid #bfdbfe; padding: 4px 10px; border-radius: 20px; font-size: 0.8rem; font-weight: 700;">
+                    {spoc_yes_count}/{spoc_total_called} Contacted
+                </span>
+            </div>
+            <div style="margin-top: 10px; padding-top: 10px; border-top: 1px dashed #bfdbfe; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; font-size: 0.86rem;">
+                <span style="color: #16a34a;">Contacted (Yes): <b>{spoc_yes_count}</b></span>
+                <span style="color: #2563eb;">Total Called: <b>{spoc_total_called}</b></span>
+                <span style="color: #dc2626;">Unreached (No): <b>{spoc_no_count}</b></span>
+            </div>
+            <div style="margin-top: 6px; font-size: 0.77rem; color: #6b7280;">
+                💡 <b>Calculation:</b> (Contacted Yes [{spoc_yes_count}] ÷ Total Called [{spoc_total_called}]) × 100 = <b>{spoc_contactable_pct:.1f}% Contactable</b>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    with st.expander("👥 View Team-Wide Fresh Calls & Contactability Summary (All Employees)", expanded=False):
+        team_summary = get_all_employees_summary()
+        if team_summary:
+            st.dataframe(team_summary, use_container_width=True, hide_index=True)
+        else:
+            st.info("No employee allocation data available.")
 
     # SECTION 1: QUEUE & FAST PHONE SEARCH NAVIGATOR
  #   st.markdown('<div class="section-card"><div class="form-title">⚡ High Speed Queue & Contact Search</div>', unsafe_allow_html=True)
@@ -908,6 +1125,7 @@ else:
                 target_idx = int(clean_target_num) - 1
                 st.session_state.queue_index = target_idx
                 st.session_state.show_resume_banner = False
+                st.session_state.phone_ownership_alert = None
                 if target_idx > st.session_state.active_call_index:
                     st.session_state.active_call_index = target_idx
                 phone_num = st.session_state.allocated_numbers[target_idx]
@@ -917,6 +1135,16 @@ else:
                 st.rerun()
             else:
                 # Phone lookup
+                clean_target_p = clean_phone(target)
+                if clean_target_p:
+                    owner_check = check_phone_ownership(clean_target_p, st.session_state.user)
+                    if not owner_check["is_my_number"]:
+                        st.session_state.phone_ownership_alert = owner_check
+                    else:
+                        st.session_state.phone_ownership_alert = None
+                else:
+                    st.session_state.phone_ownership_alert = None
+
                 if total_assigned > 0:
                     for idx, num in enumerate(st.session_state.allocated_numbers):
                         if clean_phone(target) == clean_phone(num):
@@ -927,7 +1155,10 @@ else:
                             break
                 found, src = load_student_by_phone(target)
                 if found:
-                    if src == "master":
+                    if st.session_state.get("phone_ownership_alert") and not st.session_state["phone_ownership_alert"].get("is_my_number"):
+                        f_spoc = st.session_state["phone_ownership_alert"]["owner_spoc"]
+                        st.toast(f"⚠️ Tikona Callback: Number allocated to {f_spoc}!", icon="⚠️")
+                    elif src == "master":
                         row_num = st.session_state.get("existing_master_row")
                         st.toast(f"Found existing record in Test (Row #{row_num})! Loaded for update.", icon="📝")
                     else:
@@ -938,6 +1169,7 @@ else:
         else:
             if total_assigned > 0 and current_idx < total_assigned:
                 phone_num = st.session_state.allocated_numbers[current_idx]
+                st.session_state.phone_ownership_alert = None
                 save_spoc_progress(st.session_state.user, current_idx, phone_num, active_call_index=st.session_state.active_call_index)
                 load_student_by_phone(phone_num)
                 st.rerun()
@@ -946,6 +1178,7 @@ else:
     if c_start.button("⏮️ #1", use_container_width=True, help="Jump to Target #1 (Queue beginning)", disabled=(total_assigned == 0 or current_idx == 0)):
         st.session_state.queue_index = 0
         st.session_state.show_resume_banner = False
+        st.session_state.phone_ownership_alert = None
         save_spoc_progress(st.session_state.user, 0, st.session_state.allocated_numbers[0], active_call_index=st.session_state.active_call_index)
         load_student_by_phone(st.session_state.allocated_numbers[0])
         st.toast("Jumped to Target #1!", icon="⏮️")
@@ -956,6 +1189,7 @@ else:
         if current_idx > 0:
             st.session_state.queue_index -= 1
             st.session_state.show_resume_banner = False
+            st.session_state.phone_ownership_alert = None
             phone_num = st.session_state.allocated_numbers[st.session_state.queue_index]
             save_spoc_progress(st.session_state.user, st.session_state.queue_index, phone_num, active_call_index=st.session_state.active_call_index)
             load_student_by_phone(phone_num)
@@ -966,12 +1200,71 @@ else:
         if current_idx < total_assigned - 1:
             st.session_state.queue_index += 1
             st.session_state.show_resume_banner = False
+            st.session_state.phone_ownership_alert = None
             if st.session_state.queue_index > st.session_state.active_call_index:
                 st.session_state.active_call_index = st.session_state.queue_index
             phone_num = st.session_state.allocated_numbers[st.session_state.queue_index]
             save_spoc_progress(st.session_state.user, st.session_state.queue_index, phone_num, active_call_index=st.session_state.active_call_index)
             load_student_by_phone(phone_num)
             st.rerun()
+
+    # 🧹 Clear Form
+    if c_clear.button("🧹 Clear Form", use_container_width=True):
+        st.session_state.existing_master_row = None
+        st.session_state.phone_ownership_alert = None
+        st.session_state.form_initials = DEFAULT_FORM.copy()
+        st.session_state.form_version += 1
+        st.rerun()
+
+    # 🔄 Refresh DB
+    if c_refresh.button("🔄 Refresh DB", use_container_width=True):
+        st.cache_data.clear()
+        alloc_data = fetch_allocation_data()
+        st.session_state.allocated_numbers = [
+            str(r.get("phone_number")).strip() for r in alloc_data 
+            if str(r.get("SPOC_Name")).strip().lower() == st.session_state.user.strip().lower() and r.get("phone_number")
+        ]
+        if st.session_state.allocated_numbers and st.session_state.queue_index < len(st.session_state.allocated_numbers):
+            load_student_by_phone(st.session_state.allocated_numbers[st.session_state.queue_index])
+        st.toast("Database cache refreshed!", icon="🔄")
+        st.rerun()
+
+    # ⚠️ PHONE OWNERSHIP ALERT BANNER (Position: Exactly below search bar - Ref Question 3 & Picture 2)
+    active_form_phone = clean_phone(st.session_state.form_initials.get("phone", ""))
+    ownership_alert = st.session_state.get("phone_ownership_alert")
+
+    if active_form_phone:
+        current_phone_check = check_phone_ownership(active_form_phone, st.session_state.user)
+        if not current_phone_check["is_my_number"]:
+            ownership_alert = current_phone_check
+        elif ownership_alert and clean_phone(ownership_alert.get("phone")) == active_form_phone:
+            ownership_alert = None
+
+    if ownership_alert and not ownership_alert.get("is_my_number"):
+        foreign_spoc = ownership_alert.get("owner_spoc", "Another SPOC")
+        alert_phone_num = ownership_alert.get("phone", "")
+        alert_source = ownership_alert.get("source", "Test3 Allocation")
+        st.markdown(f"""
+        <div style="background: #fff8e1; border: 2px solid #f59e0b; border-left: 6px solid #d97706; border-radius: 8px; padding: 12px 18px; margin: 10px 0 14px 0; box-shadow: 0 2px 6px rgba(0,0,0,0.05);">
+            <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+                <div style="flex: 1; min-width: 260px;">
+                    <div style="font-weight: 800; color: #b45309; font-size: 1.05rem; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">
+                        <span>⚠️ THIS NUMBER IS NOT YOURS!</span>
+                    </div>
+                    <div style="color: #1f2937; font-size: 0.93rem; line-height: 1.5;">
+                        Student phone <strong>{alert_phone_num}</strong> is allocated / synced to SPOC: <strong style="color: #b45309; font-size: 1.02rem;">{foreign_spoc}</strong> ({alert_source}).
+                        <br>
+                        <span style="color: #4b5563; font-size: 0.86rem;">
+                            📞 <em>Tikona Dialer Callback:</em> Because student callbacks come through Tikona portal randomly to our SPOCs, you can still search and update details. When saving below, you can choose to sync this record directly under <strong>{foreign_spoc}</strong>'s SPOC Name so their queue and reporting stay synced!
+                        </span>
+                    </div>
+                </div>
+                <span style="background: #d97706; color: #ffffff; padding: 5px 12px; border-radius: 6px; font-size: 0.82rem; font-weight: 700; white-space: nowrap; height: fit-content;">
+                    ⚡ TIKONA CALLBACK
+                </span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
     # 🎯 Direct Queue Jump & Resume Latest Call Toolbar (Image 2)
     if total_assigned > 0:
@@ -994,6 +1287,7 @@ else:
                 chosen_idx = int(jump_input_val) - 1
                 st.session_state.queue_index = chosen_idx
                 st.session_state.show_resume_banner = False
+                st.session_state.phone_ownership_alert = None
                 if chosen_idx > st.session_state.active_call_index:
                     st.session_state.active_call_index = chosen_idx
                 p_num = st.session_state.allocated_numbers[chosen_idx]
@@ -1008,31 +1302,12 @@ else:
             if st.button(latest_label, use_container_width=True, type="secondary" if is_at_latest else "primary", help=f"Jump directly to your active calling target (#{active_target_display})"):
                 st.session_state.queue_index = st.session_state.active_call_index
                 st.session_state.show_resume_banner = False
+                st.session_state.phone_ownership_alert = None
                 p_num = st.session_state.allocated_numbers[st.session_state.queue_index]
                 save_spoc_progress(st.session_state.user, st.session_state.queue_index, p_num, active_call_index=st.session_state.active_call_index)
                 load_student_by_phone(p_num)
                 st.toast(f"Jumped to Latest Call Target #{active_target_display}!", icon="⚡")
                 st.rerun()
-
-    # 🧹 Clear Form
-    if c_clear.button("🧹 Clear Form", use_container_width=True):
-        st.session_state.existing_master_row = None
-        st.session_state.form_initials = DEFAULT_FORM.copy()
-        st.session_state.form_version += 1
-        st.rerun()
-
-    # 🔄 Refresh DB
-    if c_refresh.button("🔄 Refresh DB", use_container_width=True):
-        st.cache_data.clear()
-        alloc_data = fetch_allocation_data()
-        st.session_state.allocated_numbers = [
-            str(r.get("phone_number")).strip() for r in alloc_data 
-            if str(r.get("SPOC_Name")).strip().lower() == st.session_state.user.strip().lower() and r.get("phone_number")
-        ]
-        if st.session_state.allocated_numbers and st.session_state.queue_index < len(st.session_state.allocated_numbers):
-            load_student_by_phone(st.session_state.allocated_numbers[st.session_state.queue_index])
-        st.toast("Database cache refreshed!", icon="🔄")
-        st.rerun()
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -1376,6 +1651,32 @@ else:
     with f_sub2:
         f_spoc_notes = st.text_input("SPOC Notes / Calling Remarks", value=init.get("spoc_notes", ""), placeholder="Any additional notes or observations...", key=f"inp_notes_{ver}")
 
+    # 🎯 Question 3: Tikona Callback SPOC Sync Solution
+    current_phone_clean = clean_phone(init.get("phone") or f_phone)
+    phone_check = check_phone_ownership(current_phone_clean, st.session_state.user) if current_phone_clean else {"is_my_number": True}
+    is_foreign_call = not phone_check.get("is_my_number")
+    foreign_spoc_name = phone_check.get("owner_spoc", "")
+
+    if is_foreign_call:
+        st.markdown(f"""
+        <div style="background: #eff6ff; border: 1.5px solid #93c5fd; border-left: 5px solid #2563eb; border-radius: 8px; padding: 12px 16px; margin-bottom: 12px;">
+            <strong style="color: #1e40af; font-size: 0.95rem;">🎯 Tikona Callback SPOC Sync Solution:</strong>
+            <p style="margin: 4px 0 0 0; color: #1e3a8a; font-size: 0.88rem;">
+                This phone number is allocated / synced to <b>{foreign_spoc_name}</b>. Select which SPOC Name this verification should sink/sync to in the Test sheet:
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        sync_choice = st.radio(
+            "Save / Sink Record Under SPOC Name:",
+            [
+                f"Sync to Allocated SPOC: {foreign_spoc_name} (Recommended — keeps {foreign_spoc_name}'s queue & reports synced)",
+                f"Attribute to Current SPOC: {st.session_state.user} (Record under your name)"
+            ],
+            index=0,
+            key=f"sync_choice_{ver}"
+        )
+
     st.markdown("<br>", unsafe_allow_html=True)
     
     # 🚀 SUBMIT / UPDATE BUTTON
@@ -1438,8 +1739,19 @@ else:
                     else:
                         final_call_remarks = f_call_remarks
 
+                    if is_foreign_call and sync_choice.startswith(f"Sync to Allocated SPOC: {foreign_spoc_name}"):
+                        chosen_spoc_name = foreign_spoc_name
+                        cb_tag = f"[Tikona callback handled by {st.session_state.user}]"
+                    else:
+                        chosen_spoc_name = st.session_state.user
+                        cb_tag = f"[Tikona callback from {foreign_spoc_name}'s allocation]" if is_foreign_call else ""
+
+                    final_notes = f_spoc_notes
+                    if cb_tag and cb_tag not in final_notes:
+                        final_notes = f"{final_notes} {cb_tag}".strip() if final_notes else cb_tag
+
                     payload = [
-                        st.session_state.user,                               # 1: SPOC Name
+                        chosen_spoc_name,                                    # 1: SPOC Name
                         f_touch,                                             # 2: Students Touch Method
                         f_name,                                              # 3: STUDENT NAME
                         f_cmis,                                              # 4: CMISID
@@ -1463,8 +1775,8 @@ else:
                         q2b_other_val if is_survey_active else "",           # 22: Q2b. Others Specify
                         q3_val if (is_survey_active and q3_val) else "N/A",  # 23: Q3. Training Helpfulness
                         "; ".join(q4_selected) if (is_survey_active and q4_selected) else "N/A",  # 24: Q4. Support Needed
-                        str(f_vdate or date.today()),                                        # 25: Verification Date
-                        f_spoc_notes                                         # 26: SPOC Remarks
+                        str(f_vdate or date.today()),                        # 25: Verification Date
+                        final_notes                                          # 26: SPOC Remarks
                     ]
                     
                     # Determine whether this is an UPDATE or NEW APPEND
@@ -1486,17 +1798,19 @@ else:
                         sheets["master"].update(values=[payload], range_name=f"A{target_row}:Z{target_row}")
                         st.cache_data.clear()
                         st.session_state.existing_master_row = None
-                        st.success(f"✅ Record for {f_name} ({f_phone}) UPDATED successfully in Google Sheet 'Test' (Row #{target_row})! No duplicate created.")
+                        st.session_state.phone_ownership_alert = None
+                        st.success(f"✅ Record for {f_name} ({f_phone}) UPDATED successfully in Google Sheet 'Test' (Row #{target_row})! Synced to SPOC: {chosen_spoc_name}.")
                     else:
                         sheets["master"].append_row(payload)
                         st.cache_data.clear()
                         st.session_state.existing_master_row = None
-                        st.success(f"✅ Record for {f_name} ({f_phone}) saved successfully to Google Sheet 'Test'!")
+                        st.session_state.phone_ownership_alert = None
+                        st.success(f"✅ Record for {f_name} ({f_phone}) saved successfully to Google Sheet 'Test'! Synced to SPOC: {chosen_spoc_name}.")
                     
                     # Queue progression
-                    if is_update_record:
-                        # 🎯 FIX FOR UPDATE QUEUE RESET ISSUE:
-                        # Updating a student's details must NOT advance queue to edited_idx + 1 (e.g. Queue 2).
+                    if is_update_record or is_foreign_call:
+                        # 🎯 FIX FOR UPDATE / TIKONA CALLBACK QUEUE RESET ISSUE:
+                        # Updating a student's details or attending a Tikona callback must NOT displace calling queue.
                         # Return SPOC back to their active calling target (e.g. Call #71)!
                         target_resume_idx = st.session_state.get("active_call_index", st.session_state.queue_index)
                         if total_assigned > 0 and target_resume_idx < total_assigned:
@@ -1504,10 +1818,11 @@ else:
                             next_phone = st.session_state.allocated_numbers[target_resume_idx]
                             save_spoc_progress(st.session_state.user, target_resume_idx, next_phone, active_call_index=target_resume_idx)
                             load_student_by_phone(next_phone)
-                            st.toast(f"Update saved! Returned to active calling queue: Target #{target_resume_idx + 1}", icon="🎯")
+                            st.toast(f"Record saved! Returned to active calling queue: Target #{target_resume_idx + 1}", icon="🎯")
                         else:
                             st.session_state.form_initials = DEFAULT_FORM.copy()
                             st.session_state.form_version += 1
+
                     else:
                         # Normal sequential verification call
                         st.session_state.queue_index += 1
