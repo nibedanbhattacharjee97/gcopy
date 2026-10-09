@@ -305,6 +305,54 @@ def check_phone_ownership(phone_val, current_spoc):
     # Not found in allocation or master -> unassigned/free
     return {"is_my_number": True, "owner_spoc": current_spoc, "source": "Unassigned", "phone": str(phone_val or "")}
 
+def compute_scope_stats(scope_target="ALL"):
+    """
+    Computes (assigned, called, yes, no, fresh_pending, contactable_pct)
+    for either 'ALL' (Team Total) or a specific SPOC name (case-insensitive).
+    """
+    try:
+        alloc_data = fetch_allocation_data()
+        master_data = fetch_master_data()
+
+        spoc_alloc = {}
+        for r in alloc_data:
+            s_raw = str(r.get("SPOC_Name") or r.get("spoc_name") or r.get("SPOC Name") or "").strip()
+            if s_raw:
+                s_canon = s_raw.title()
+                spoc_alloc[s_canon] = spoc_alloc.get(s_canon, 0) + 1
+
+        spoc_yes = {}
+        spoc_no = {}
+        if len(master_data) > 1:
+            for r in master_data[1:]:
+                if len(r) > 14 and r[0]:
+                    s_canon = str(r[0]).strip().title()
+                    cont = str(r[14]).strip().lower()
+                    if cont == "yes":
+                        spoc_yes[s_canon] = spoc_yes.get(s_canon, 0) + 1
+                    elif cont == "no":
+                        spoc_no[s_canon] = spoc_no.get(s_canon, 0) + 1
+
+        if scope_target == "ALL":
+            tot_assigned = sum(spoc_alloc.values())
+            tot_yes = sum(spoc_yes.values())
+            tot_no = sum(spoc_no.values())
+            tot_called = tot_yes + tot_no
+            tot_pending = max(0, tot_assigned - tot_called)
+            tot_rate = (tot_yes / tot_called * 100.0) if tot_called > 0 else 0.0
+            return tot_assigned, tot_called, tot_yes, tot_no, tot_pending, tot_rate
+        else:
+            target_canon = str(scope_target).strip().title()
+            tot_assigned = spoc_alloc.get(target_canon, 0)
+            tot_yes = spoc_yes.get(target_canon, 0)
+            tot_no = spoc_no.get(target_canon, 0)
+            tot_called = tot_yes + tot_no
+            tot_pending = max(0, tot_assigned - tot_called) if tot_assigned > 0 else 0
+            tot_rate = (tot_yes / tot_called * 100.0) if tot_called > 0 else 0.0
+            return tot_assigned, tot_called, tot_yes, tot_no, tot_pending, tot_rate
+    except Exception:
+        return 0, 0, 0, 0, 0, 0.0
+
 @st.cache_data(ttl=60)
 def get_all_employees_summary():
     """Calculates Total Assigned, Yes, No, Total Called, Fresh Pending, and Contactable % for each employee"""
@@ -316,23 +364,30 @@ def get_all_employees_summary():
         for r in alloc_data:
             s_name = str(r.get("SPOC_Name") or r.get("spoc_name") or r.get("SPOC Name") or "").strip()
             if s_name:
-                spoc_assigned[s_name] = spoc_assigned.get(s_name, 0) + 1
+                s_canon = s_name.title()
+                spoc_assigned[s_canon] = spoc_assigned.get(s_canon, 0) + 1
                 
         spoc_yes = {}
         spoc_no = {}
         if len(master_data) > 1:
             for r in master_data[1:]:
                 if len(r) > 14 and r[0]:
-                    s_name = str(r[0]).strip()
+                    s_canon = str(r[0]).strip().title()
                     cont = str(r[14]).strip().lower()
                     if cont == "yes":
-                        spoc_yes[s_name] = spoc_yes.get(s_name, 0) + 1
+                        spoc_yes[s_canon] = spoc_yes.get(s_canon, 0) + 1
                     elif cont == "no":
-                        spoc_no[s_name] = spoc_no.get(s_name, 0) + 1
+                        spoc_no[s_canon] = spoc_no.get(s_canon, 0) + 1
                         
-        all_spocs = sorted(list(set(list(spoc_assigned.keys()) + list(spoc_yes.keys()) + list(spoc_no.keys()))), key=lambda x: x.lower())
+        all_spocs = sorted(list(set(list(spoc_assigned.keys()) + list(spoc_yes.keys()) + list(spoc_no.keys()))))
         
         summary = []
+        tot_all_assigned = 0
+        tot_all_called = 0
+        tot_all_yes = 0
+        tot_all_no = 0
+        tot_all_pending = 0
+
         for s in all_spocs:
             tot = spoc_assigned.get(s, 0)
             y = spoc_yes.get(s, 0)
@@ -340,6 +395,13 @@ def get_all_employees_summary():
             called = y + n
             pending = max(0, tot - called) if tot > 0 else 0
             rate = (y / called * 100.0) if called > 0 else 0.0
+            
+            tot_all_assigned += tot
+            tot_all_called += called
+            tot_all_yes += y
+            tot_all_no += n
+            tot_all_pending += pending
+            
             summary.append({
                 "SPOC Name": s,
                 "Assigned (Test3)": tot,
@@ -349,9 +411,21 @@ def get_all_employees_summary():
                 "Fresh Pending": pending,
                 "Contactable %": f"{rate:.1f}%"
             })
+
+        total_rate = (tot_all_yes / tot_all_called * 100.0) if tot_all_called > 0 else 0.0
+        summary.append({
+            "SPOC Name": "🌟 TOTAL (ALL TEAM)",
+            "Assigned (Test3)": tot_all_assigned,
+            "Called (Yes+No)": tot_all_called,
+            "Yes (Contacted)": tot_all_yes,
+            "No (Unreached)": tot_all_no,
+            "Fresh Pending": tot_all_pending,
+            "Contactable %": f"{total_rate:.1f}%"
+        })
         return summary
     except Exception:
         return []
+
 
 
 # ==============================================================================
@@ -791,24 +865,41 @@ else:
     # Sidebar
     st.sidebar.markdown(f"### 👤 Logged In: **{st.session_state.user}**")
     st.sidebar.markdown("---")
-    st.sidebar.markdown("### 📋 Verification Queue")
+    
+    if total_assigned > 0:
+        sb_val_assigned = str(total_assigned)
+        sb_val_pending = spoc_fresh_pending
+        sb_val_called = spoc_total_called
+        sb_val_rate = spoc_contactable_pct
+        sb_val_yes = spoc_yes_count
+        sb_val_no = spoc_no_count
+        st.sidebar.markdown("### 📋 Verification Queue")
+    else:
+        t_assigned, t_called, t_yes, t_no, t_pending, t_rate = compute_scope_stats("ALL")
+        sb_val_assigned = f"{t_assigned} (Team)"
+        sb_val_pending = t_pending
+        sb_val_called = t_called
+        sb_val_rate = t_rate
+        sb_val_yes = t_yes
+        sb_val_no = t_no
+        st.sidebar.markdown("### 📋 Verification Queue *(Team Total)*")
     
     col_sb1, col_sb2 = st.sidebar.columns(2)
-    col_sb1.metric(label="🎯 Assigned", value=total_assigned)
-    col_sb2.metric(label="⏳ Fresh Pending", value=spoc_fresh_pending, delta=f"-{spoc_total_called} called", delta_color="inverse")
+    col_sb1.metric(label="🎯 Assigned", value=sb_val_assigned)
+    col_sb2.metric(label="⏳ Fresh Pending", value=sb_val_pending, delta=f"-{sb_val_called} called", delta_color="inverse")
     
     col_sb3, col_sb4 = st.sidebar.columns(2)
-    col_sb3.metric(label="📞 Contactable %", value=f"{spoc_contactable_pct:.1f}%")
-    col_sb4.metric(label="✅ Contacted (Yes)", value=spoc_yes_count)
+    col_sb3.metric(label="📞 Contactable %", value=f"{sb_val_rate:.1f}%")
+    col_sb4.metric(label="✅ Contacted (Yes)", value=sb_val_yes)
     
-    st.sidebar.caption(f"📊 Calls: **{spoc_total_called}** (Yes: **{spoc_yes_count}**, No: **{spoc_no_count}**)")
+    st.sidebar.caption(f"📊 Calls: **{sb_val_called}** (Yes: **{sb_val_yes}**, No: **{sb_val_no}**)")
 
     if total_assigned > 0:
         progress_val = min(current_idx / total_assigned, 1.0)
         st.sidebar.progress(progress_val)
         st.sidebar.write(f"Calling record **{min(current_idx + 1, total_assigned)}** of **{total_assigned}**")
     else:
-        st.sidebar.info("💡 Free Mode: No specific numbers assigned to you in Test3. You can paste and verify any student number directly.")
+        st.sidebar.info("💡 Free / Supervisor Mode: No specific numbers assigned to you in Test3. Full team metrics displayed.")
 
     if st.sidebar.button("🔴 Logout", use_container_width=True):
         st.session_state.logged_in = False
@@ -921,70 +1012,91 @@ else:
     # ==========================================================================
     # 📊 OPERATIONAL PERFORMANCE BOARDS (Board 1: Fresh Calls Pending | Board 2: % of Yes)
     # ==========================================================================
-    st.markdown(f"""
-    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 1.1rem;">
-        <!-- BOARD 1: FRESH CALLS PENDING -->
-        <div style="background: linear-gradient(135deg, #f0fdf4 0%, #ffffff 100%); border: 1.5px solid #86efac; border-left: 6px solid #16a34a; border-radius: 12px; padding: 14px 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.04);">
-            <div style="display: flex; justify-content: space-between; align-items: flex-start;">
-                <div>
-                    <span style="font-size: 0.78rem; font-weight: 700; color: #166534; text-transform: uppercase; letter-spacing: 0.5px;">
-                        📋 Board 1: Calling Pipeline ({st.session_state.user})
-                    </span>
-                    <div style="display: flex; align-items: baseline; gap: 10px; margin-top: 4px;">
-                        <span style="font-size: 2.2rem; font-weight: 900; color: #15803d; line-height: 1;">
-                            {spoc_fresh_pending}
-                        </span>
-                        <span style="font-size: 1.05rem; font-weight: 800; color: #166534;">
-                            Fresh Calls Pending
-                        </span>
-                    </div>
-                </div>
-                <span style="background: #dcfce7; color: #15803d; border: 1px solid #bbf7d0; padding: 4px 10px; border-radius: 20px; font-size: 0.8rem; font-weight: 700;">
-                    Target: {total_assigned}
-                </span>
-            </div>
-            <div style="margin-top: 10px; padding-top: 10px; border-top: 1px dashed #bbf7d0; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; font-size: 0.86rem;">
-                <span style="color: #374151;">Total Assigned: <b>{total_assigned}</b></span>
-                <span style="color: #2563eb;">Total Called: <b>{spoc_total_called}</b></span>
-                <span style="color: #16a34a;">Yes (Contacted): <b>{spoc_yes_count}</b></span>
-                <span style="color: #dc2626;">No (Unreached): <b>{spoc_no_count}</b></span>
-            </div>
-            <div style="margin-top: 6px; font-size: 0.77rem; color: #6b7280;">
-                💡 <b>Calculation:</b> Total Calls ({total_assigned}) − Called ({spoc_total_called}) [Yes: {spoc_yes_count} + No: {spoc_no_count}] = <b>{spoc_fresh_pending} Fresh Pending</b>
-            </div>
-        </div>
+    alloc_raw_data = fetch_allocation_data()
+    all_alloc_spoc_list = sorted(list({str(r.get("SPOC_Name") or "").strip().title() for r in alloc_raw_data if r.get("SPOC_Name")}))
+    
+    logged_user_title = st.session_state.user.strip().title()
+    logged_user_has_alloc = (logged_user_title in all_alloc_spoc_list)
 
-        <!-- BOARD 2: % OF YES (CONTACTABILITY) -->
-        <div style="background: linear-gradient(135deg, #eff6ff 0%, #ffffff 100%); border: 1.5px solid #93c5fd; border-left: 6px solid #2563eb; border-radius: 12px; padding: 14px 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.04);">
-            <div style="display: flex; justify-content: space-between; align-items: flex-start;">
-                <div>
-                    <span style="font-size: 0.78rem; font-weight: 700; color: #1e40af; text-transform: uppercase; letter-spacing: 0.5px;">
-                        🎯 Board 2: Contactability Rate ({st.session_state.user})
-                    </span>
-                    <div style="display: flex; align-items: baseline; gap: 10px; margin-top: 4px;">
-                        <span style="font-size: 2.2rem; font-weight: 900; color: #1d4ed8; line-height: 1;">
-                            {spoc_contactable_pct:.1f}%
-                        </span>
-                        <span style="font-size: 1.05rem; font-weight: 800; color: #1e40af;">
-                            Contactable (% of Yes)
-                        </span>
-                    </div>
-                </div>
-                <span style="background: #dbeafe; color: #1d4ed8; border: 1px solid #bfdbfe; padding: 4px 10px; border-radius: 20px; font-size: 0.8rem; font-weight: 700;">
-                    {spoc_yes_count}/{spoc_total_called} Contacted
-                </span>
-            </div>
-            <div style="margin-top: 10px; padding-top: 10px; border-top: 1px dashed #bfdbfe; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; font-size: 0.86rem;">
-                <span style="color: #16a34a;">Contacted (Yes): <b>{spoc_yes_count}</b></span>
-                <span style="color: #2563eb;">Total Called: <b>{spoc_total_called}</b></span>
-                <span style="color: #dc2626;">Unreached (No): <b>{spoc_no_count}</b></span>
-            </div>
-            <div style="margin-top: 6px; font-size: 0.77rem; color: #6b7280;">
-                💡 <b>Calculation:</b> (Contacted Yes [{spoc_yes_count}] ÷ Total Called [{spoc_total_called}]) × 100 = <b>{spoc_contactable_pct:.1f}% Contactable</b>
-            </div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    if logged_user_has_alloc:
+        view_options = [f"👤 My Personal Stats ({logged_user_title})", "🌟 All Team Combined (Portal Total)"] + [s for s in all_alloc_spoc_list if s != logged_user_title]
+        def_view_idx = 0
+    else:
+        view_options = ["🌟 All Team Combined (Portal Total)"] + all_alloc_spoc_list
+        def_view_idx = 0
+
+    col_view_lbl, col_view_sel = st.columns([1.6, 2.4])
+    with col_view_lbl:
+        st.markdown("<div style='padding-top: 6px; font-weight: 800; color: #0f4c81; font-size: 1.05rem;'>📊 Select Performance View:</div>", unsafe_allow_html=True)
+    with col_view_sel:
+        selected_perf_view = st.selectbox(
+            "Select Performance View",
+            view_options,
+            index=def_view_idx,
+            label_visibility="collapsed",
+            key="perf_view_selector_box"
+        )
+
+    # Compute stats based on selection
+    if selected_perf_view == "🌟 All Team Combined (Portal Total)":
+        stat_scope = "ALL"
+        display_scope_name = "All Team Combined"
+    elif selected_perf_view.startswith("👤 My Personal Stats"):
+        stat_scope = logged_user_title
+        display_scope_name = logged_user_title
+    else:
+        stat_scope = selected_perf_view
+        display_scope_name = selected_perf_view
+
+    v_assigned, v_called, v_yes, v_no, v_pending, v_rate = compute_scope_stats(stat_scope)
+
+    col_b1, col_b2 = st.columns(2)
+    with col_b1:
+        b1_card = f"""<div style="background: linear-gradient(135deg, #f0fdf4 0%, #ffffff 100%); border: 1.5px solid #86efac; border-left: 6px solid #16a34a; border-radius: 12px; padding: 14px 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.04); min-height: 165px;">
+<div style="display: flex; justify-content: space-between; align-items: flex-start;">
+<div>
+<span style="font-size: 0.8rem; font-weight: 700; color: #166534; text-transform: uppercase; letter-spacing: 0.5px;">📋 Board 1: Calling Pipeline ({display_scope_name})</span>
+<div style="display: flex; align-items: baseline; gap: 10px; margin-top: 4px;">
+<span style="font-size: 2.3rem; font-weight: 900; color: #15803d; line-height: 1;">{v_pending}</span>
+<span style="font-size: 1.05rem; font-weight: 800; color: #166534;">Fresh Calls Pending</span>
+</div>
+</div>
+<span style="background: #dcfce7; color: #15803d; border: 1px solid #bbf7d0; padding: 4px 10px; border-radius: 20px; font-size: 0.82rem; font-weight: 700;">Target: {v_assigned}</span>
+</div>
+<div style="margin-top: 12px; padding-top: 10px; border-top: 1px dashed #bbf7d0; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; font-size: 0.88rem;">
+<span style="color: #374151;">Total Assigned: <b>{v_assigned}</b></span>
+<span style="color: #2563eb;">Total Called: <b>{v_called}</b></span>
+<span style="color: #16a34a;">Yes (Contacted): <b>{v_yes}</b></span>
+<span style="color: #dc2626;">No (Unreached): <b>{v_no}</b></span>
+</div>
+<div style="margin-top: 8px; font-size: 0.78rem; color: #6b7280;">
+💡 <b>Calculation:</b> Total Calls ({v_assigned}) − Called ({v_called}) [Yes: {v_yes} + No: {v_no}] = <b>{v_pending} Fresh Pending</b>
+</div>
+</div>"""
+        st.markdown(b1_card, unsafe_allow_html=True)
+
+    with col_b2:
+        b2_card = f"""<div style="background: linear-gradient(135deg, #eff6ff 0%, #ffffff 100%); border: 1.5px solid #93c5fd; border-left: 6px solid #2563eb; border-radius: 12px; padding: 14px 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.04); min-height: 165px;">
+<div style="display: flex; justify-content: space-between; align-items: flex-start;">
+<div>
+<span style="font-size: 0.8rem; font-weight: 700; color: #1e40af; text-transform: uppercase; letter-spacing: 0.5px;">🎯 Board 2: Contactability Rate ({display_scope_name})</span>
+<div style="display: flex; align-items: baseline; gap: 10px; margin-top: 4px;">
+<span style="font-size: 2.3rem; font-weight: 900; color: #1d4ed8; line-height: 1;">{v_rate:.1f}%</span>
+<span style="font-size: 1.05rem; font-weight: 800; color: #1e40af;">Contactable (% of Yes)</span>
+</div>
+</div>
+<span style="background: #dbeafe; color: #1d4ed8; border: 1px solid #bfdbfe; padding: 4px 10px; border-radius: 20px; font-size: 0.82rem; font-weight: 700;">{v_yes}/{v_called} Contacted</span>
+</div>
+<div style="margin-top: 12px; padding-top: 10px; border-top: 1px dashed #bfdbfe; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; font-size: 0.88rem;">
+<span style="color: #16a34a;">Contacted (Yes): <b>{v_yes}</b></span>
+<span style="color: #2563eb;">Total Attempted: <b>{v_called}</b></span>
+<span style="color: #dc2626;">Unreached (No): <b>{v_no}</b></span>
+</div>
+<div style="margin-top: 8px; font-size: 0.78rem; color: #6b7280;">
+💡 <b>Calculation:</b> (Contacted Yes [{v_yes}] ÷ Total Called [{v_called}]) × 100 = <b>{v_rate:.1f}% Contactable</b>
+</div>
+</div>"""
+        st.markdown(b2_card, unsafe_allow_html=True)
 
     with st.expander("👥 View Team-Wide Fresh Calls & Contactability Summary (All Employees)", expanded=False):
         team_summary = get_all_employees_summary()
