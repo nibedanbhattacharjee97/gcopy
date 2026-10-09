@@ -941,8 +941,8 @@ else:
     # ==========================================================================
     # 📊 OPERATIONAL PERFORMANCE BOARDS (Board 1: Fresh Calls Pending | Board 2: % of Yes)
     # ==========================================================================
-    # Admin roles check (Nibedan, Pritam, Kalpana, Tushar)
-    ADMIN_USERS = {"nibedan", "pritam", "kalpana", "tushar"}
+    # Admin roles check (Nibedan, Pritam, Kalpana, koushik)
+    ADMIN_USERS = {"nibedan", "pritam", "kalpana", "koushik"}
     is_admin = st.session_state.user.strip().lower() in ADMIN_USERS
 
     if is_admin:
