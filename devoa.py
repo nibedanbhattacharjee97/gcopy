@@ -546,6 +546,8 @@ if "existing_master_row" not in st.session_state:
     st.session_state.existing_master_row = None
 if "phone_ownership_alert" not in st.session_state:
     st.session_state.phone_ownership_alert = None
+if "spoc_live_history" not in st.session_state:
+    st.session_state.spoc_live_history = []
 
 
 DEFAULT_FORM = {
@@ -1841,6 +1843,20 @@ else:
                         sheets["master"].update(values=[payload], range_name=f"A{target_row}:Z{target_row}")
                         fetch_master_data.clear()
                         compute_scope_stats.clear()
+                        
+                        # Instant 0ms live session history update
+                        if "spoc_live_history" not in st.session_state:
+                            st.session_state.spoc_live_history = []
+                        updated_live = False
+                        for i_live, (r_num, r_data) in enumerate(st.session_state.spoc_live_history):
+                            if len(r_data) > 4 and clean_phone(r_data[4]) == clean_phone(payload[4]):
+                                st.session_state.spoc_live_history[i_live] = (target_row, list(payload))
+                                updated_live = True
+                                break
+                        if not updated_live:
+                            st.session_state.spoc_live_history.insert(0, (target_row, list(payload)))
+                        st.session_state.spoc_live_history = st.session_state.spoc_live_history[:10]
+
                         st.session_state.existing_master_row = None
                         st.session_state.phone_ownership_alert = None
                         st.success(f"✅ Record for {f_name} ({f_phone}) UPDATED successfully in Google Sheet 'Test' (Row #{target_row})! Synced to SPOC: {chosen_spoc_name}.")
@@ -1848,6 +1864,15 @@ else:
                         sheets["master"].append_row(payload)
                         fetch_master_data.clear()
                         compute_scope_stats.clear()
+
+                        # Instant 0ms live session history update
+                        if "spoc_live_history" not in st.session_state:
+                            st.session_state.spoc_live_history = []
+                        fresh_rows = fetch_master_data()
+                        est_row = len(fresh_rows) if fresh_rows else 2
+                        st.session_state.spoc_live_history.insert(0, (est_row, list(payload)))
+                        st.session_state.spoc_live_history = st.session_state.spoc_live_history[:10]
+
                         st.session_state.existing_master_row = None
                         st.session_state.phone_ownership_alert = None
                         st.success(f"✅ Record for {f_name} ({f_phone}) saved successfully to Google Sheet 'Test'! Synced to SPOC: {chosen_spoc_name}.")
@@ -1909,14 +1934,30 @@ else:
             if len(r_data) > 0 and str(r_data[0]).strip().lower() == current_spoc_clean:
                 spoc_records.append((r_i, r_data))
 
+    # Merge with session live buffer (ensures 100% instant 0ms LIVE visibility)
+    known_phones = {clean_phone(r[1][4]): idx for idx, r in enumerate(spoc_records) if len(r[1]) > 4}
+    for live_item in st.session_state.get("spoc_live_history", []):
+        live_phone = clean_phone(live_item[1][4]) if len(live_item[1]) > 4 else ""
+        if live_phone:
+            if live_phone in known_phones:
+                spoc_records[known_phones[live_phone]] = live_item
+            else:
+                spoc_records.append(live_item)
+
     # Z-A: Newest / latest call first (reverse order)
     latest_5_calls = list(reversed(spoc_records))[:5]
 
-    col_h1, col_h2 = st.columns([3.5, 1.5])
+    col_h1, col_h2, col_h3 = st.columns([2.9, 1.1, 1.0])
     with col_h1:
-        st.markdown(f'<div class="form-title">📋 SPOC Calling History: Latest 5 Calls (Z-A / Newest First) — {st.session_state.user}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="form-title">📋 SPOC Calling History: Latest 5 Calls (Z-A / Newest First) — {st.session_state.user} <span style="background: #e6f4ea; color: #137333; font-size: 0.72rem; font-weight: 700; padding: 2px 8px; border-radius: 12px; border: 1px solid #ceead6; vertical-align: middle; margin-left: 6px;">🟢 LIVE FEED</span></div>', unsafe_allow_html=True)
     with col_h2:
-        st.markdown(f"<div style='text-align: right; color: #64748b; font-size: 0.9rem; font-weight: 600; padding-top: 4px;'>Showing newest <b>{len(latest_5_calls)}</b> of <b>{len(spoc_records)}</b> verified</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='text-align: right; color: #64748b; font-size: 0.88rem; font-weight: 600; padding-top: 6px;'>Showing newest <b>{len(latest_5_calls)}</b> of <b>{len(spoc_records)}</b> verified</div>", unsafe_allow_html=True)
+    with col_h3:
+        if st.button("🔄 Live Sync", key="btn_sync_live_hist", use_container_width=True, help="Instantly pull latest calls directly from Google Sheets"):
+            fetch_master_data.clear()
+            compute_scope_stats.clear()
+            st.toast("Calling history synced live with Google Sheets!", icon="🔄")
+            st.rerun()
 
     if not latest_5_calls:
         st.info(f"💡 No verified calls submitted yet for {st.session_state.user}. When you submit verifications, your latest 5 calls with their Queue Numbers will appear here.")
