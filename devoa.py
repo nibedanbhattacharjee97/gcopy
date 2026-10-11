@@ -201,9 +201,16 @@ def get_sheets_connection():
 
 sheets = get_sheets_connection()
 
-@st.cache_data(ttl=600)
+# ==============================================================================
+# ⏱️ PRODUCTION CACHE CONFIGURATION (15-Minute Data Refresh Interval)
+# ==============================================================================
+# 15 minutes (900 seconds) cache TTL keeps data warm in RAM throughout long calls (5-10+ mins)
+# and prevents Google Sheets API rate-limiting when 11 SPOCs call concurrently.
+DATA_CACHE_TTL = 900
+
+@st.cache_data(ttl=DATA_CACHE_TTL)
 def fetch_all_lookup_data():
-    """Fetches and indexes all 7,400+ student records from Test2 for instant O(1) lookup"""
+    """Fetches and indexes all 7,400+ student records from Test2 for instant O(1) lookup (15 min cache)"""
     records = sheets["lookup"].get_all_records()
     phone_map = {}
     for r in records:
@@ -213,17 +220,17 @@ def fetch_all_lookup_data():
             phone_map[cleaned] = r
     return records, phone_map
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=DATA_CACHE_TTL)
 def fetch_auth_data():
     return sheets["auth"].get_all_records()
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=DATA_CACHE_TTL)
 def fetch_allocation_data():
     return sheets["allocation"].get_all_records()
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=DATA_CACHE_TTL)
 def fetch_master_data():
-    """Fetches all rows from Test verification sheet to check for existing submissions"""
+    """Fetches all rows from Test verification sheet to check for existing submissions (15 min cache)"""
     try:
         return sheets["master"].get_all_values()
     except Exception:
@@ -244,7 +251,7 @@ def find_master_record_by_phone(phone_target):
                 return r, i + 1
     return None, None
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=DATA_CACHE_TTL)
 def get_phone_allocation_map():
     """Maps clean 10-digit phone number -> allocated SPOC name from Test3 allocation sheet"""
     try:
@@ -305,12 +312,12 @@ def check_phone_ownership(phone_val, current_spoc):
     # Not found in allocation or master -> unassigned/free
     return {"is_my_number": True, "owner_spoc": current_spoc, "source": "Unassigned", "phone": str(phone_val or "")}
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=DATA_CACHE_TTL)
 def compute_scope_stats(scope_target="ALL"):
     """
     Computes (assigned, called, yes, no, fresh_pending, contactable_pct)
     for either 'ALL' (Team Total) or a specific SPOC name (case-insensitive).
-    Cached in RAM (invalidated automatically on submit/refresh).
+    Cached in RAM for 15 minutes (invalidated automatically on submit/refresh).
     """
     try:
         alloc_data = fetch_allocation_data()
@@ -752,7 +759,7 @@ if not st.session_state.logged_in:
             if st.button("Create Account", use_container_width=True):
                 if nu and np:
                     sheets["auth"].append_row([nu.strip(), hash_password(np), datetime.now().strftime("%Y-%m-%d")])
-                    st.cache_data.clear() 
+                    fetch_auth_data.clear()
                     st.success("Registered successfully! Please switch to Login tab.")
                 else:
                     st.warning("Please fill all fields.")
@@ -1832,13 +1839,15 @@ else:
 
                     if target_row:
                         sheets["master"].update(values=[payload], range_name=f"A{target_row}:Z{target_row}")
-                        st.cache_data.clear()
+                        fetch_master_data.clear()
+                        compute_scope_stats.clear()
                         st.session_state.existing_master_row = None
                         st.session_state.phone_ownership_alert = None
                         st.success(f"✅ Record for {f_name} ({f_phone}) UPDATED successfully in Google Sheet 'Test' (Row #{target_row})! Synced to SPOC: {chosen_spoc_name}.")
                     else:
                         sheets["master"].append_row(payload)
-                        st.cache_data.clear()
+                        fetch_master_data.clear()
+                        compute_scope_stats.clear()
                         st.session_state.existing_master_row = None
                         st.session_state.phone_ownership_alert = None
                         st.success(f"✅ Record for {f_name} ({f_phone}) saved successfully to Google Sheet 'Test'! Synced to SPOC: {chosen_spoc_name}.")
