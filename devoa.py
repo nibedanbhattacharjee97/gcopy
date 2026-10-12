@@ -75,6 +75,50 @@ st.markdown("""
         div[data-testid="stCheckbox"]:hover {
             background: #edf2f7; border-color: #cbd5e0;
         }
+        /* Fresh Call List Button styling (matches user green outline specification) */
+        .fresh-call-header-btn {
+            display: flex;
+            justify-content: flex-end;
+            align-items: center;
+        }
+        .fresh-call-header-btn div[data-testid="stPopover"] {
+            width: 100%;
+            display: flex;
+            justify-content: flex-end;
+        }
+        .fresh-call-header-btn div[data-testid="stPopover"] > button,
+        .fresh-call-header-btn button {
+            border: 1.5px solid #2e7d32 !important;
+            background-color: #ffffff !important;
+            color: #1b5e20 !important;
+            font-weight: 700 !important;
+            font-size: 0.96rem !important;
+            border-radius: 6px !important;
+            padding: 0.42rem 1.15rem !important;
+            height: auto !important;
+            min-height: 2.35rem !important;
+            width: auto !important;
+            min-width: 220px !important;
+            transition: all 0.2s ease-in-out !important;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.04) !important;
+        }
+        .fresh-call-header-btn div[data-testid="stPopover"] > button:hover,
+        .fresh-call-header-btn button:hover {
+            background-color: #f0fdf4 !important;
+            border-color: #15803d !important;
+            color: #14532d !important;
+            box-shadow: 0 2px 6px rgba(46, 125, 50, 0.2) !important;
+            transform: translateY(-1px) !important;
+        }
+        .fresh-pinned-card {
+            background: #f0fdf4;
+            border: 1.5px solid #86efac;
+            border-left: 5px solid #16a34a;
+            border-radius: 10px;
+            padding: 14px 18px;
+            margin-bottom: 1.2rem;
+            box-shadow: 0 2px 8px rgba(22, 163, 74, 0.08);
+        }
     </style>
 """, unsafe_allow_html=True)
 
@@ -361,6 +405,188 @@ def compute_scope_stats(scope_target="ALL"):
             return tot_assigned, tot_called, tot_yes, tot_no, tot_pending, tot_rate
     except Exception:
         return 0, 0, 0, 0, 0, 0.0
+
+def get_spoc_fresh_pending_data(target_spoc, live_history=None):
+    """
+    Computes real-time Fresh Call List for the specified SPOC:
+    - Assigned numbers from Test3 (allocation sheet)
+    - Completed calls (Yes / No) from Test (master sheet) + live session buffer
+    Formula: Total Assigned - Total Called (Yes + No) = Fresh Pending Calls
+    """
+    if live_history is None:
+        live_history = []
+    target_clean = (target_spoc or "").strip().lower()
+
+    # 1. Fetch assigned numbers from Test3
+    alloc_records = fetch_allocation_data()
+    assigned_raw = []
+    for r in alloc_records:
+        s_name = str(r.get("SPOC_Name") or r.get("spoc_name") or r.get("SPOC Name") or "").strip().lower()
+        if s_name == target_clean:
+            p_val = r.get("phone_number") or r.get("Phone_Number") or r.get("Contact Number") or r.get("phone")
+            if p_val:
+                assigned_raw.append(str(p_val).strip())
+
+    # 2. Fetch called phone numbers from Test sheet (Contactable == Yes / No)
+    master_rows = fetch_master_data()
+    called_phones = set()
+    yes_cnt, no_cnt = 0, 0
+    if len(master_rows) > 1:
+        for r in master_rows[1:]:
+            if len(r) > 14 and str(r[0]).strip().lower() == target_clean:
+                cont = str(r[14]).strip().lower()
+                if cont == "yes":
+                    yes_cnt += 1
+                    p_c = clean_phone(r[4])
+                    if p_c:
+                        called_phones.add(p_c)
+                elif cont == "no":
+                    no_cnt += 1
+                    p_c = clean_phone(r[4])
+                    if p_c:
+                        called_phones.add(p_c)
+
+    # 3. Merge with live session buffer (0ms instant reactivity before sheet sync)
+    for _, l_r in live_history:
+        if len(l_r) > 14 and str(l_r[0]).strip().lower() == target_clean:
+            cont = str(l_r[14]).strip().lower()
+            if cont in ("yes", "no"):
+                p_c = clean_phone(l_r[4])
+                if p_c:
+                    called_phones.add(p_c)
+
+    # 4. Lookup student info from Test2
+    _, phone_map = fetch_all_lookup_data()
+    fresh_list = []
+    for idx, p_raw in enumerate(assigned_raw):
+        p_c = clean_phone(p_raw)
+        if p_c and p_c not in called_phones:
+            s_rec = phone_map.get(p_c, {})
+            fresh_list.append({
+                "queue_index": idx,
+                "target_num": idx + 1,
+                "phone": p_c,
+                "raw_phone": p_raw,
+                "student_name": str(s_rec.get("student_name", "")).strip(),
+                "programme": str(s_rec.get("Programme completed", "")).strip(),
+                "course": str(s_rec.get("Course or training name", "")).strip(),
+                "district": str(s_rec.get("District or city", "")).strip()
+            })
+
+    just_numbers = [x["phone"] for x in fresh_list]
+    just_numbers_text = "\n".join(just_numbers)
+
+    return {
+        "spoc": target_spoc,
+        "assigned_count": len(assigned_raw),
+        "called_count": yes_cnt + no_cnt,
+        "yes_count": yes_cnt,
+        "no_count": no_cnt,
+        "fresh_pending_count": len(fresh_list),
+        "fresh_list": fresh_list,
+        "just_numbers": just_numbers,
+        "just_numbers_text": just_numbers_text
+    }
+
+def render_fresh_call_list_content(fresh_data, current_spoc, in_popover=True):
+    """Renders the complete Fresh Call List UI with Just Numbers and Interactive Queue"""
+    f_spoc = fresh_data["spoc"].title()
+    v_assigned = fresh_data["assigned_count"]
+    v_called = fresh_data["called_count"]
+    v_yes = fresh_data["yes_count"]
+    v_no = fresh_data["no_count"]
+    v_pending = fresh_data["fresh_pending_count"]
+    just_nums_text = fresh_data["just_numbers_text"]
+    fresh_items = fresh_data["fresh_list"]
+
+    # Header & Metric Banner
+    st.markdown(f"""
+        <div style="background: linear-gradient(135deg, #f0fdf4 0%, #ffffff 100%); border: 1.5px solid #86efac; border-left: 5px solid #16a34a; border-radius: 8px; padding: 10px 14px; margin-bottom: 12px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                <span style="font-weight: 800; color: #166534; font-size: 1.05rem;">🟢 Fresh Calling Queue: {f_spoc}</span>
+                <span style="background: #dcfce7; color: #15803d; border: 1px solid #bbf7d0; padding: 2px 8px; border-radius: 12px; font-weight: 700; font-size: 0.82rem;">{v_pending} Pending</span>
+            </div>
+            <div style="margin-top: 6px; font-size: 0.82rem; color: #374151;">
+                📊 <b>Formula:</b> Total Assigned ({v_assigned}) − Called ({v_called}) [Yes: {v_yes} + No: {v_no}] = <b style="color: #15803d;">{v_pending} Fresh Pending</b>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    if v_pending == 0:
+        st.success(f"🎉 Fantastic work! All {v_assigned} assigned calls for {f_spoc} have been completed.")
+        return
+
+    tab_nums, tab_queue = st.tabs(["📱 Just Numbers (Raw List)", "📞 Interactive Call List"])
+
+    with tab_nums:
+        st.caption(f"📋 Respective SPOC-wise uncalled phone numbers from Test3 ({v_pending} remaining). Copy or download below:")
+        st.text_area(
+            "Just Numbers",
+            value=just_nums_text,
+            height=160,
+            key=f"ta_just_nums_{f_spoc}_{'pop' if in_popover else 'pin'}",
+            help="Click inside and press Ctrl+A / Ctrl+C to copy all pending numbers directly into your dialer."
+        )
+
+        c_dl1, c_dl2 = st.columns(2)
+        with c_dl1:
+            st.download_button(
+                label=f"📥 Download Just Numbers ({v_pending})",
+                data=just_nums_text,
+                file_name=f"Fresh_Call_Numbers_{f_spoc}_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
+                mime="text/plain",
+                use_container_width=True,
+                key=f"dl_txt_{f_spoc}_{'pop' if in_popover else 'pin'}"
+            )
+        with c_dl2:
+            csv_lines = ["Queue_Target,Phone_Number,Student_Name,Programme,District"]
+            for item in fresh_items:
+                csv_lines.append(f"Target #{item['target_num']},{item['phone']},{item['student_name']},{item['programme']},{item['district']}")
+            csv_content = "\n".join(csv_lines)
+            st.download_button(
+                label="📊 Download CSV Details",
+                data=csv_content,
+                file_name=f"Fresh_Call_List_{f_spoc}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key=f"dl_csv_{f_spoc}_{'pop' if in_popover else 'pin'}"
+            )
+
+    with tab_queue:
+        q_search = st.text_input(
+            "Search phone or student name",
+            placeholder="Type 10-digit number or name...",
+            key=f"q_search_{f_spoc}_{'pop' if in_popover else 'pin'}",
+            label_visibility="collapsed"
+        )
+        filtered_items = fresh_items
+        if q_search.strip():
+            clean_q = clean_phone(q_search.strip())
+            name_q = q_search.strip().lower()
+            filtered_items = [
+                x for x in fresh_items
+                if (clean_q and clean_q in x["phone"]) or (name_q in x["student_name"].lower()) or (f"#{x['target_num']}" == q_search.strip())
+            ]
+
+        st.caption(f"Showing **{min(len(filtered_items), 20)}** of **{len(filtered_items)}** pending calls:")
+        for it in filtered_items[:20]:
+            col_i1, col_i2 = st.columns([3, 1.2])
+            with col_i1:
+                st.markdown(f"**Target #{it['target_num']}**: `{it['phone']}` &nbsp;·&nbsp; *{it['student_name'] or 'Student'}*")
+            with col_i2:
+                if st.button("📞 Load", key=f"btn_ld_{it['phone']}_{'pop' if in_popover else 'pin'}", use_container_width=True):
+                    st.session_state.queue_index = it["queue_index"]
+                    if it["queue_index"] > st.session_state.active_call_index:
+                        st.session_state.active_call_index = it["queue_index"]
+                    st.session_state.show_resume_banner = False
+                    st.session_state.phone_ownership_alert = None
+                    save_spoc_progress(st.session_state.user, it["queue_index"], it["phone"], active_call_index=st.session_state.active_call_index)
+                    load_student_by_phone(it["phone"])
+                    st.toast(f"Loaded Target #{it['target_num']} ({it['phone']}) for calling!", icon="🎯")
+                    st.rerun()
+
+        if len(filtered_items) > 20:
+            st.caption(f"... and {len(filtered_items) - 20} more pending calls.")
 
 
 
@@ -836,6 +1062,19 @@ else:
         progress_val = min(current_idx / total_assigned, 1.0)
         st.sidebar.progress(progress_val)
         st.sidebar.write(f"Calling record **{min(current_idx + 1, total_assigned)}** of **{total_assigned}**")
+        if sb_val_pending > 0:
+            with st.sidebar.expander(f"📱 Fresh Numbers ({sb_val_pending} Pending)", expanded=False):
+                fresh_sb_data = get_spoc_fresh_pending_data(st.session_state.user, st.session_state.get("spoc_live_history", []))
+                st.caption(f"Respective SPOC: **{st.session_state.user}**")
+                st.text_area("Just Numbers", value=fresh_sb_data["just_numbers_text"], height=130, key="sb_just_nums_box", label_visibility="collapsed")
+                st.download_button(
+                    label=f"📥 Download Just Numbers ({sb_val_pending})",
+                    data=fresh_sb_data["just_numbers_text"],
+                    file_name=f"Fresh_Numbers_{st.session_state.user}_{datetime.now().strftime('%Y%m%d')}.txt",
+                    mime="text/plain",
+                    use_container_width=True,
+                    key="sb_dl_fresh_txt"
+                )
     else:
         st.sidebar.info("💡 Free / Supervisor Mode: No specific numbers assigned to you in Test3. Full team metrics displayed.")
 
@@ -1011,6 +1250,9 @@ else:
 </div>
 <div style="margin-top: 8px; font-size: 0.78rem; color: #6b7280;">
 💡 <b>Calculation:</b> Total Calls ({v_assigned}) − Called ({v_called}) [Yes: {v_yes} + No: {v_no}] = <b>{v_pending} Fresh Pending</b>
+</div>
+<div style="margin-top: 4px; font-size: 0.78rem; color: #166534; font-weight: 600;">
+📱 <i>View, copy, or download all uncalled numbers via <b>Fresh Call List ({display_scope_name})</b> in Section A.</i>
 </div>
 </div>"""
         st.markdown(b1_card, unsafe_allow_html=True)
@@ -1381,7 +1623,40 @@ else:
     # ==========================================================================
     # SECTION A: RESPONDENT PROFILE (Pre-filled from Test2)
     # ==========================================================================
-    st.markdown('<div class="section-card"><div class="form-title">📋 Section A: Respondent Profile</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+
+    # 🟢 FRESH CALL LIST ENGINE & HEADER (Matches User UI Specification)
+    # Displays Section A Title on the left and Green Outline "Fresh Call List (SPOC)" on the right
+    effective_fresh_spoc = st.session_state.user.strip()
+    if is_admin and "selected_perf_view" in locals() and selected_perf_view and selected_perf_view != "🌟 All Team Combined (Portal Total)":
+        effective_fresh_spoc = selected_perf_view.strip()
+
+    fresh_data = get_spoc_fresh_pending_data(effective_fresh_spoc, st.session_state.get("spoc_live_history", []))
+
+    col_sec_title, col_sec_fresh = st.columns([1.6, 1.4])
+    with col_sec_title:
+        st.markdown('<div class="form-title" style="margin-bottom: 0.4rem; padding-top: 5px;">📋 Section A: Respondent Profile</div>', unsafe_allow_html=True)
+    with col_sec_fresh:
+        st.markdown('<div class="fresh-call-header-btn">', unsafe_allow_html=True)
+        popover_btn_label = f"Fresh Call List ({effective_fresh_spoc.title()})"
+        with st.popover(popover_btn_label, use_container_width=True):
+            render_fresh_call_list_content(fresh_data, effective_fresh_spoc, in_popover=True)
+            st.markdown("---")
+            pin_checked = st.checkbox(
+                "📌 Keep Fresh List pinned above form",
+                value=st.session_state.get("pin_fresh_call_list", False),
+                key=f"chk_pin_fresh_header_{effective_fresh_spoc}"
+            )
+            if pin_checked != st.session_state.get("pin_fresh_call_list", False):
+                st.session_state.pin_fresh_call_list = pin_checked
+                st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    # Pinned Fresh Call List panel (if toggled by SPOC)
+    if st.session_state.get("pin_fresh_call_list"):
+        st.markdown('<div class="fresh-pinned-card">', unsafe_allow_html=True)
+        render_fresh_call_list_content(fresh_data, effective_fresh_spoc, in_popover=False)
+        st.markdown('</div>', unsafe_allow_html=True)
     
     pa1, pa2, pa3, pa4 = st.columns(4)
     with pa1:
