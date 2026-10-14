@@ -119,6 +119,50 @@ st.markdown("""
             margin-bottom: 1.2rem;
             box-shadow: 0 2px 8px rgba(22, 163, 74, 0.08);
         }
+        /* Not Contactable Button styling */
+        .nocontact-header-btn {
+            display: flex;
+            justify-content: flex-end;
+            align-items: center;
+        }
+        .nocontact-header-btn div[data-testid="stPopover"] {
+            width: 100%;
+            display: flex;
+            justify-content: flex-end;
+        }
+        .nocontact-header-btn div[data-testid="stPopover"] > button,
+        .nocontact-header-btn button {
+            border: 1.5px solid #ea580c !important;
+            background-color: #ffffff !important;
+            color: #c2410c !important;
+            font-weight: 700 !important;
+            font-size: 0.96rem !important;
+            border-radius: 6px !important;
+            padding: 0.42rem 1.15rem !important;
+            height: auto !important;
+            min-height: 2.35rem !important;
+            width: auto !important;
+            min-width: 200px !important;
+            transition: all 0.2s ease-in-out !important;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.04) !important;
+        }
+        .nocontact-header-btn div[data-testid="stPopover"] > button:hover,
+        .nocontact-header-btn button:hover {
+            background-color: #fff7ed !important;
+            border-color: #c2410c !important;
+            color: #9a3412 !important;
+            box-shadow: 0 2px 6px rgba(234, 88, 12, 0.2) !important;
+            transform: translateY(-1px) !important;
+        }
+        .nocontact-pinned-card {
+            background: #fff7ed;
+            border: 1.5px solid #fed7aa;
+            border-left: 5px solid #ea580c;
+            border-radius: 10px;
+            padding: 14px 18px;
+            margin-bottom: 1.2rem;
+            box-shadow: 0 2px 8px rgba(234, 88, 12, 0.08);
+        }
     </style>
 """, unsafe_allow_html=True)
 
@@ -488,7 +532,7 @@ def get_spoc_fresh_pending_data(target_spoc, live_history=None):
         "just_numbers_text": just_numbers_text
     }
 
-def render_fresh_call_list_content(fresh_data, current_spoc, in_popover=True):
+def render_fresh_call_list_content(fresh_data, current_spoc, key_prefix="hdr"):
     """Renders the complete Fresh Call List UI with Just Numbers and Interactive Queue"""
     f_spoc = fresh_data["spoc"].title()
     v_assigned = fresh_data["assigned_count"]
@@ -524,7 +568,7 @@ def render_fresh_call_list_content(fresh_data, current_spoc, in_popover=True):
             "Just Numbers",
             value=just_nums_text,
             height=160,
-            key=f"ta_just_nums_{f_spoc}_{'pop' if in_popover else 'pin'}",
+            key=f"ta_just_nums_{f_spoc}_{key_prefix}",
             help="Click inside and press Ctrl+A / Ctrl+C to copy all pending numbers directly into your dialer."
         )
 
@@ -536,7 +580,7 @@ def render_fresh_call_list_content(fresh_data, current_spoc, in_popover=True):
                 file_name=f"Fresh_Call_Numbers_{f_spoc}_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
                 mime="text/plain",
                 use_container_width=True,
-                key=f"dl_txt_{f_spoc}_{'pop' if in_popover else 'pin'}"
+                key=f"dl_txt_{f_spoc}_{key_prefix}"
             )
         with c_dl2:
             csv_lines = ["Queue_Target,Phone_Number,Student_Name,Programme,District"]
@@ -549,14 +593,14 @@ def render_fresh_call_list_content(fresh_data, current_spoc, in_popover=True):
                 file_name=f"Fresh_Call_List_{f_spoc}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
                 mime="text/csv",
                 use_container_width=True,
-                key=f"dl_csv_{f_spoc}_{'pop' if in_popover else 'pin'}"
+                key=f"dl_csv_{f_spoc}_{key_prefix}"
             )
 
     with tab_queue:
         q_search = st.text_input(
             "Search phone or student name",
             placeholder="Type 10-digit number or name...",
-            key=f"q_search_{f_spoc}_{'pop' if in_popover else 'pin'}",
+            key=f"q_search_{f_spoc}_{key_prefix}",
             label_visibility="collapsed"
         )
         filtered_items = fresh_items
@@ -574,7 +618,7 @@ def render_fresh_call_list_content(fresh_data, current_spoc, in_popover=True):
             with col_i1:
                 st.markdown(f"**Target #{it['target_num']}**: `{it['phone']}` &nbsp;·&nbsp; *{it['student_name'] or 'Student'}*")
             with col_i2:
-                if st.button("📞 Load", key=f"btn_ld_{it['phone']}_{'pop' if in_popover else 'pin'}", use_container_width=True):
+                if st.button("📞 Load", key=f"btn_ld_{it['phone']}_{it['target_num']}_{key_prefix}", use_container_width=True):
                     st.session_state.queue_index = it["queue_index"]
                     if it["queue_index"] > st.session_state.active_call_index:
                         st.session_state.active_call_index = it["queue_index"]
@@ -587,6 +631,177 @@ def render_fresh_call_list_content(fresh_data, current_spoc, in_popover=True):
 
         if len(filtered_items) > 20:
             st.caption(f"... and {len(filtered_items) - 20} more pending calls.")
+
+def get_spoc_not_contactable_data(target_spoc, live_history=None):
+    """
+    Computes real-time list of Not Contactable ('No') phone numbers for a SPOC:
+    - Scans Test master sheet and live session buffer
+    - Tracks latest disposition per clean 10-digit phone number
+    - ONLY includes phone numbers whose latest disposition is 'no'
+    - If a number is re-called and updated from 'No' to 'Yes', it automatically disappears from this list!
+    """
+    if live_history is None:
+        live_history = []
+    target_clean = (target_spoc or "").strip().lower()
+    is_all = target_clean in ("all", "total", "team", "team total", "🌟 all team combined (portal total)")
+
+    master_rows = fetch_master_data()
+    _, phone_map = fetch_all_lookup_data()
+
+    # Map: clean_phone -> latest record dict
+    latest_by_phone = {}
+
+    # 1. Scan master rows from top to bottom (row 2 to row N) so later submissions overwrite earlier ones
+    if len(master_rows) > 1:
+        for r_idx, r in enumerate(master_rows[1:], start=2):
+            if len(r) > 14 and r[0]:
+                r_spoc = str(r[0]).strip().lower()
+                if is_all or r_spoc == target_clean:
+                    p = clean_phone(r[4])
+                    if p:
+                        latest_by_phone[p] = {
+                            "sheet_row": r_idx,
+                            "spoc": str(r[0]).strip(),
+                            "student_name": str(r[2]).strip() if len(r) > 2 else "",
+                            "cmis": str(r[3]).strip() if len(r) > 3 else "",
+                            "phone": p,
+                            "contactable": str(r[14]).strip().lower(),
+                            "call_remarks": str(r[15]).strip() if len(r) > 15 else "",
+                            "vdate": str(r[24]).strip() if len(r) > 24 else "",
+                            "notes": str(r[25]).strip() if len(r) > 25 else ""
+                        }
+
+    # 2. Apply live session history (most recent state in active session, 0ms latency)
+    for r_num, l_r in live_history:
+        if len(l_r) > 14 and l_r[0]:
+            r_spoc = str(l_r[0]).strip().lower()
+            if is_all or r_spoc == target_clean:
+                p = clean_phone(l_r[4])
+                if p:
+                    latest_by_phone[p] = {
+                        "sheet_row": r_num,
+                        "spoc": str(l_r[0]).strip(),
+                        "student_name": str(l_r[2]).strip() if len(l_r) > 2 else "",
+                        "cmis": str(l_r[3]).strip() if len(l_r) > 3 else "",
+                        "phone": p,
+                        "contactable": str(l_r[14]).strip().lower(),
+                        "call_remarks": str(l_r[15]).strip() if len(l_r) > 15 else "",
+                        "vdate": str(l_r[24]).strip() if len(l_r) > 24 else "",
+                        "notes": str(l_r[25]).strip() if len(l_r) > 25 else ""
+                    }
+
+    # 3. Filter only those whose LATEST disposition is 'no' (if updated to 'yes', excluded!)
+    no_list = []
+    for p, item in latest_by_phone.items():
+        if item["contactable"] == "no":
+            if not item["student_name"] and p in phone_map:
+                item["student_name"] = str(phone_map[p].get("student_name", "")).strip()
+            no_list.append(item)
+
+    no_list.sort(key=lambda x: x["sheet_row"])
+    just_numbers = [x["phone"] for x in no_list]
+    just_numbers_text = "\n".join(just_numbers)
+
+    return {
+        "spoc": target_spoc,
+        "no_count": len(no_list),
+        "no_list": no_list,
+        "just_numbers": just_numbers,
+        "just_numbers_text": just_numbers_text
+    }
+
+def render_not_contactable_content(no_data, current_spoc, key_prefix="hdr"):
+    """Renders the Not Contactable ('No') Data Phone Numbers UI matching User Specification"""
+    f_spoc = no_data["spoc"].title()
+    no_count = no_data["no_count"]
+    just_nums_text = no_data["just_numbers_text"]
+    no_items = no_data["no_list"]
+
+    # Header & Metric Banner (matching Image 3 style)
+    st.markdown(f"""
+        <div style="background: linear-gradient(135deg, #fff7ed 0%, #ffffff 100%); border: 1.5px solid #fed7aa; border-left: 5px solid #ea580c; border-radius: 8px; padding: 10px 14px; margin-bottom: 12px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                <span style="font-weight: 800; color: #9a3412; font-size: 1.05rem;">📞 Not Contactable ("No") Queue: {f_spoc}</span>
+                <span style="background: #ffedd5; color: #c2410c; border: 1px solid #fed7aa; padding: 2px 8px; border-radius: 12px; font-weight: 700; font-size: 0.82rem;">{no_count} Unreached ("No")</span>
+            </div>
+            <div style="margin-top: 6px; font-size: 0.82rem; color: #431407;">
+                💡 <b>Dynamic Re-call:</b> If any number is re-called and updated from <b>"No"</b> to <b>"Yes"</b>, it automatically disappears from this list!
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    if no_count == 0:
+        st.success(f"🎉 Fantastic work! No unreached ('No') calls pending re-call for {f_spoc}.")
+        return
+
+    tab_nums, tab_queue = st.tabs(["📱 Just Numbers (Raw List)", "📞 Interactive Re-Call List"])
+
+    with tab_nums:
+        st.caption(f"📋 Respective SPOC-wise 'No' contact numbers ({no_count} unreached). Copy or download below:")
+        st.text_area(
+            "Just Numbers",
+            value=just_nums_text,
+            height=160,
+            key=f"ta_no_nums_{f_spoc}_{key_prefix}",
+            help="Click inside and press Ctrl+A / Ctrl+C to copy all 'No' numbers directly into your dialer."
+        )
+
+        c_dl1, c_dl2 = st.columns(2)
+        with c_dl1:
+            st.download_button(
+                label=f"📥 Download Just Numbers ({no_count})",
+                data=just_nums_text,
+                file_name=f"Not_Contactable_Numbers_{f_spoc}_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
+                mime="text/plain",
+                use_container_width=True,
+                key=f"dl_no_txt_{f_spoc}_{key_prefix}"
+            )
+        with c_dl2:
+            csv_lines = ["Sheet_Row,Phone_Number,Student_Name,Contactable,Call_Remarks,Verification_Date,SPOC"]
+            for item in no_items:
+                csv_lines.append(f"{item['sheet_row']},{item['phone']},{item['student_name']},{item['contactable']},{item['call_remarks']},{item['vdate']},{item['spoc']}")
+            csv_content = "\n".join(csv_lines)
+            st.download_button(
+                label="📊 Download CSV Details",
+                data=csv_content,
+                file_name=f"Not_Contactable_List_{f_spoc}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key=f"dl_no_csv_{f_spoc}_{key_prefix}"
+            )
+
+    with tab_queue:
+        q_search = st.text_input(
+            "Search phone or student name",
+            placeholder="Type 10-digit number or name...",
+            key=f"q_search_no_{f_spoc}_{key_prefix}",
+            label_visibility="collapsed"
+        )
+        filtered_items = no_items
+        if q_search.strip():
+            clean_q = clean_phone(q_search.strip())
+            name_q = q_search.strip().lower()
+            filtered_items = [
+                x for x in no_items
+                if (clean_q and clean_q in x["phone"]) or (name_q in x["student_name"].lower()) or (q_search.strip().lower() in x["call_remarks"].lower())
+            ]
+
+        st.caption(f"Showing **{min(len(filtered_items), 20)}** of **{len(filtered_items)}** 'No' calls:")
+        for it in filtered_items[:20]:
+            col_i1, col_i2 = st.columns([3, 1.2])
+            with col_i1:
+                st.markdown(f"**Row #{it['sheet_row']}**: `{it['phone']}` &nbsp;·&nbsp; *{it['student_name'] or 'Student'}* <br><span style='font-size:0.78rem; color:#b45309;'>Reason: {it['call_remarks'] or 'No Response'}</span>", unsafe_allow_html=True)
+            with col_i2:
+                if st.button("📞 Re-call", key=f"btn_recall_{it['phone']}_{it['sheet_row']}_{key_prefix}", use_container_width=True):
+                    st.session_state.existing_master_row = it["sheet_row"]
+                    st.session_state.show_resume_banner = False
+                    st.session_state.phone_ownership_alert = None
+                    load_student_by_phone(it["phone"])
+                    st.toast(f"Loaded {it['phone']} in UPDATE MODE for re-call! Change 'No' to 'Yes' if reached.", icon="📝")
+                    st.rerun()
+
+        if len(filtered_items) > 20:
+            st.caption(f"... and {len(filtered_items) - 20} more 'No' calls.")
 
 
 
@@ -1026,6 +1241,11 @@ else:
     else:
         spoc_contactable_pct = 0.0
 
+    # Admin roles check & performance scope (defined early so sidebar & boards both have access)
+    ADMIN_USERS = {"nibedan", "pritam", "kalpana", "koushik"}
+    is_admin = st.session_state.user.strip().lower() in ADMIN_USERS
+    selected_perf_view = st.session_state.get("perf_view_selector_box", "🌟 All Team Combined (Portal Total)")
+
     # Sidebar
     st.sidebar.markdown(f"### 👤 Logged In: **{st.session_state.user}**")
     st.sidebar.markdown("---")
@@ -1092,84 +1312,34 @@ else:
 
 
     # ==========================================================================
-    # 📥 SPOC VERIFIED DATA EXPORT & FILTERS (Sidebar)
+    # 📞 NOT CONTACTABLE ("NO" CALLS) QUEUE & RE-CALL ENGINE (Sidebar)
     # ==========================================================================
     st.sidebar.markdown("---")
-    st.sidebar.markdown("### 📥 Download Verified Data")
+    st.sidebar.markdown("### 📞 Not Contactable (\"No\" Calls)")
 
-    # 1. Verification Date Filter
-    vdate_filter_mode = st.sidebar.selectbox(
-        "Verification Date",
-        ["Total data", "Specific Date", "From - To date"],
-        key="side_vdate_mode"
-    )
+    # Dynamic target SPOC determination for Not Contactable
+    target_nocontact_spoc = st.session_state.user.strip()
+    if is_admin:
+        alloc_raw_data = fetch_allocation_data()
+        all_spocs_options = ["🌟 All Team Combined"] + sorted(list({str(r.get("SPOC_Name") or "").strip().title() for r in alloc_raw_data if r.get("SPOC_Name")}))
+        def_idx = 0
+        if selected_perf_view in all_spocs_options:
+            def_idx = all_spocs_options.index(selected_perf_view)
+        admin_side_spoc = st.sidebar.selectbox(
+            "Select SPOC for 'No' Calls",
+            all_spocs_options,
+            index=def_idx,
+            key="sb_admin_nocontact_spoc"
+        )
+        target_nocontact_spoc = "ALL" if admin_side_spoc == "🌟 All Team Combined" else admin_side_spoc
 
-    spec_vdate = None
-    from_vdate = None
-    to_vdate = None
-
-    if vdate_filter_mode == "Specific Date":
-        spec_vdate = st.sidebar.date_input("Select Date", value=date.today(), key="side_spec_vdate")
-    elif vdate_filter_mode == "From - To date":
-        col_vd1, col_vd2 = st.sidebar.columns(2)
-        from_vdate = col_vd1.date_input("From Date", value=date.today(), key="side_from_vdate")
-        to_vdate = col_vd2.date_input("To Date", value=date.today(), key="side_to_vdate")
-
-    # 2. Contactable Filter
-    cont_filter_mode = st.sidebar.selectbox(
-        "Contactable",
-        ["Total data", "Yes", "No"],
-        key="side_cont_mode"
-    )
-
-    # 3. Filter Master Records for this SPOC
-    filtered_export_rows = []
-
-    for r in raw_spoc_rows:
-        # Date Filter Check (Col Y: index 24)
-        row_date_str = str(r[24]).strip() if len(r) > 24 else ""
-        row_date = parse_date_safe(row_date_str)
-        date_matches = True
-        
-        if vdate_filter_mode == "Specific Date":
-            date_matches = (row_date == spec_vdate) if row_date else (row_date_str == str(spec_vdate))
-        elif vdate_filter_mode == "From - To date":
-            if row_date and from_vdate and to_vdate:
-                date_matches = (from_vdate <= row_date <= to_vdate)
-            else:
-                date_matches = False
-
-        if not date_matches:
-            continue
-
-        # Contactable Filter Check (Col O: index 14)
-        row_cont = str(r[14]).strip().lower() if len(r) > 14 else ""
-        if cont_filter_mode == "Yes" and row_cont != "yes":
-            continue
-        elif cont_filter_mode == "No" and row_cont != "no":
-            continue
-
-        filtered_export_rows.append(r)
-
-    # CSV Generation
-    csv_buf = io.StringIO()
-    csv_writer = csv.writer(csv_buf)
-    csv_writer.writerow(master_headers)
-    for r in filtered_export_rows:
-        padded = list(r) + [""] * max(0, len(master_headers) - len(r))
-        csv_writer.writerow(padded[:len(master_headers)])
-    csv_bytes = csv_buf.getvalue().encode("utf-8")
-
-    st.sidebar.caption(f"📊 Verified records: **{len(filtered_export_rows)}**")
-
-    # Download Button
-    st.sidebar.download_button(
-        label=f"📥 Download Respective CSVs ({st.session_state.user})",
-        data=csv_bytes,
-        file_name=f"verified_{st.session_state.user.lower().replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-        mime="text/csv",
-        use_container_width=True
-    )
+    no_side_data = get_spoc_not_contactable_data(target_nocontact_spoc, st.session_state.get("spoc_live_history", []))
+    sb_nocontact_btn_label = f"Not Contactable ({target_nocontact_spoc.title()}) ⌄" if not (is_admin and target_nocontact_spoc == "ALL") else "Not Contactable (All Team) ⌄"
+    
+    st.sidebar.markdown('<div class="nocontact-header-btn">', unsafe_allow_html=True)
+    with st.sidebar.popover(sb_nocontact_btn_label, use_container_width=True):
+        render_not_contactable_content(no_side_data, target_nocontact_spoc, key_prefix="sb")
+    st.sidebar.markdown('</div>', unsafe_allow_html=True)
 
     # Resume Banner (If SPOC returned after closing tab/shift)
     if st.session_state.get("show_resume_banner") and total_assigned > 0 and current_idx > 0:
@@ -1189,10 +1359,6 @@ else:
     # ==========================================================================
     # 📊 OPERATIONAL PERFORMANCE BOARDS (Board 1: Fresh Calls Pending | Board 2: % of Yes)
     # ==========================================================================
-    # Admin roles check (Nibedan, Pritam, Kalpana, koushik)
-    ADMIN_USERS = {"nibedan", "pritam", "kalpana", "koushik"}
-    is_admin = st.session_state.user.strip().lower() in ADMIN_USERS
-
     if is_admin:
         # Admins can select between Team Total and any individual SPOC
         alloc_raw_data = fetch_allocation_data()
@@ -1633,14 +1799,14 @@ else:
 
     fresh_data = get_spoc_fresh_pending_data(effective_fresh_spoc, st.session_state.get("spoc_live_history", []))
 
-    col_sec_title, col_sec_fresh = st.columns([1.6, 1.4])
+    col_sec_title, col_sec_fresh, col_sec_no = st.columns([1.5, 1.25, 1.25])
     with col_sec_title:
         st.markdown('<div class="form-title" style="margin-bottom: 0.4rem; padding-top: 5px;">📋 Section A: Respondent Profile</div>', unsafe_allow_html=True)
     with col_sec_fresh:
         st.markdown('<div class="fresh-call-header-btn">', unsafe_allow_html=True)
-        popover_btn_label = f"Fresh Call List ({effective_fresh_spoc.title()})"
+        popover_btn_label = f"Fresh Call List ({effective_fresh_spoc.title()}) ⌄"
         with st.popover(popover_btn_label, use_container_width=True):
-            render_fresh_call_list_content(fresh_data, effective_fresh_spoc, in_popover=True)
+            render_fresh_call_list_content(fresh_data, effective_fresh_spoc, key_prefix="hdr")
             st.markdown("---")
             pin_checked = st.checkbox(
                 "📌 Keep Fresh List pinned above form",
@@ -1651,11 +1817,33 @@ else:
                 st.session_state.pin_fresh_call_list = pin_checked
                 st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
+    with col_sec_no:
+        st.markdown('<div class="nocontact-header-btn">', unsafe_allow_html=True)
+        no_data_hdr = get_spoc_not_contactable_data(effective_fresh_spoc, st.session_state.get("spoc_live_history", []))
+        no_btn_label = f"Not Contactable ({effective_fresh_spoc.title()}) ⌄"
+        with st.popover(no_btn_label, use_container_width=True):
+            render_not_contactable_content(no_data_hdr, effective_fresh_spoc, key_prefix="hdr")
+            st.markdown("---")
+            pin_no_checked = st.checkbox(
+                "📌 Keep 'No' List pinned above form",
+                value=st.session_state.get("pin_no_call_list", False),
+                key=f"chk_pin_no_header_{effective_fresh_spoc}"
+            )
+            if pin_no_checked != st.session_state.get("pin_no_call_list", False):
+                st.session_state.pin_no_call_list = pin_no_checked
+                st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
 
     # Pinned Fresh Call List panel (if toggled by SPOC)
     if st.session_state.get("pin_fresh_call_list"):
         st.markdown('<div class="fresh-pinned-card">', unsafe_allow_html=True)
-        render_fresh_call_list_content(fresh_data, effective_fresh_spoc, in_popover=False)
+        render_fresh_call_list_content(fresh_data, effective_fresh_spoc, key_prefix="pin")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    # Pinned Not Contactable panel (if toggled by SPOC)
+    if st.session_state.get("pin_no_call_list"):
+        st.markdown('<div class="nocontact-pinned-card">', unsafe_allow_html=True)
+        render_not_contactable_content(no_data_hdr, effective_fresh_spoc, key_prefix="pin")
         st.markdown('</div>', unsafe_allow_html=True)
     
     pa1, pa2, pa3, pa4 = st.columns(4)
