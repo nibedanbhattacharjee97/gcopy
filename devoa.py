@@ -1214,6 +1214,10 @@ if not st.session_state.logged_in:
                             saved_q, saved_act = get_saved_placement_index(u, plc_students)
                             st.session_state.placement_queue_index = saved_q
                             st.session_state.placement_active_call_index = saved_act
+                            if saved_q > 0 and saved_q < len(plc_students):
+                                st.session_state.show_placement_resume_banner = True
+                            else:
+                                st.session_state.show_placement_resume_banner = False
                         else:
                             alloc_data = fetch_allocation_data()
                             spoc_numbers = [
