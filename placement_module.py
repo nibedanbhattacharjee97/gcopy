@@ -143,6 +143,20 @@ def parse_date_safe(d_val):
             pass
     return None
 
+def get_placement_highest_verified_index(student_list):
+    """
+    Returns the index of the highest student row in student_list that has already been verified
+    (contactable is 'Yes' or 'No'). Returns -1 if none have been verified yet.
+    """
+    if not student_list:
+        return -1
+    highest = -1
+    for idx, s in enumerate(student_list):
+        cont = str(s.get("contactable", "")).strip().lower()
+        if cont in ["yes", "no"]:
+            highest = idx
+    return highest
+
 # ==============================================================================
 # 💾 PERSISTENCE & QUEUE PROGRESS FOR PLACEMENT
 # ==============================================================================
@@ -180,26 +194,43 @@ def save_placement_progress(spoc_name, queue_index, phone="", active_call_index=
         pass
 
 def get_saved_placement_index(spoc_name, student_list):
+    """
+    Smart auto-resume: If a SPOC previously called 2 students and 75 fresh calls are pending,
+    she automatically resumes at Target #3 (the first uncalled fresh student)!
+    """
     if not spoc_name or not student_list:
         return 0, 0
     data = load_all_placement_progress()
-    saved = data.get(spoc_name.strip().lower())
-    if not saved:
-        return 0, 0
+    saved = data.get(spoc_name.strip().lower(), {})
     saved_active = saved.get("active_call_index", saved.get("queue_index", 0))
     if not isinstance(saved_active, int) or saved_active < 0 or saved_active >= len(student_list):
         saved_active = 0
+
+    highest_verified = get_placement_highest_verified_index(student_list)
+    if highest_verified >= 0 and (highest_verified + 1) < len(student_list):
+        effective_active = max(saved_active, highest_verified + 1)
+    else:
+        effective_active = saved_active
 
     saved_phone = clean_phone(saved.get("phone", ""))
     if saved_phone:
         for idx, item in enumerate(student_list):
             if clean_phone(item.get("contact_number", "")) == saved_phone:
-                return idx, max(idx, saved_active)
+                return idx, max(idx, effective_active)
 
     saved_idx = saved.get("queue_index", 0)
-    if isinstance(saved_idx, int) and 0 <= saved_idx < len(student_list):
-        return saved_idx, max(saved_idx, saved_active)
-    return 0, saved_active
+    # If saved_idx was pointing to an already verified student, automatically advance to next fresh student
+    if highest_verified >= 0 and (highest_verified + 1) < len(student_list):
+        if saved_idx <= highest_verified:
+            target_idx = highest_verified + 1
+        else:
+            target_idx = saved_idx
+    elif isinstance(saved_idx, int) and 0 <= saved_idx < len(student_list):
+        target_idx = saved_idx
+    else:
+        target_idx = min(len(student_list) - 1, effective_active)
+
+    return target_idx, max(target_idx, effective_active)
 
 # ==============================================================================
 # 📊 CACHED DATA FETCHING & MODELING
@@ -552,10 +583,9 @@ def ai_parse_call_notes(raw_notes: str, student_info: dict) -> dict:
     elif any(k in text for k in ["didn't share", "refused", "busy call later", "withheld"]):
         extracted["retention_status"] = "Confirmed Name But Didn't Share Any Information."
     else:
-        # Default active retention
         extracted["retention_status"] = "Working in same job"
 
-    # Extract Salary if numeric digits found (e.g. 10000, 12k, 15,000)
+    # Extract Salary if numeric digits found
     sal_match = re.search(r"(?:salary|sal|earning|stipend)?\s*(?:inr|rs\.?|₹)?\s*(\d{4,6}|\d{1,2}k)\b", text)
     if sal_match:
         val = sal_match.group(1).replace(",", "")
@@ -566,7 +596,7 @@ def ai_parse_call_notes(raw_notes: str, student_info: dict) -> dict:
         if extracted.get("retention_status") in ["Working in same job", "Left_The_Job"]:
             extracted["salary"] = str(student_info.get("salary", ""))
 
-    # Extract NPS rating (e.g. "nps 10", "rated 9", "10/10")
+    # Extract NPS rating
     nps_match = re.search(r"\b(?:nps|rating|rate|score)?\s*([0-9]|10)(?:\s*/\s*10)?\b", text)
     if nps_match:
         extracted["nps"] = nps_match.group(1)
@@ -655,7 +685,6 @@ def compute_retention_risk_score(student: dict) -> dict:
         score -= 5
         reasons.append("Intern/Trainee role (tenure check recommended)")
 
-    # Normalize score
     score = max(35, min(98, score))
 
     if score >= 80:
@@ -702,7 +731,7 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                 background-color: #f8fafc !important;
             }
             .stButton > button[kind="primary"] {
-                background: linear-gradient(135deg, #1e40af 0%, #0f4c81 100%) !important;
+                background: #ff4b4b !important;
                 color: #ffffff !important;
                 border: none !important;
             }
@@ -805,9 +834,14 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
     with col_view_lbl:
         st.markdown("<div style='padding-top: 6px; font-weight: 800; color: #0f4c81; font-size: 1.05rem;'>📊 Select Performance View:</div>", unsafe_allow_html=True)
     with col_view_sel:
-        default_v_idx = 0
-        if not is_admin and current_spoc.title() in view_options:
+        # Check if view was overridden
+        forced_view = st.session_state.get("plc_perf_view")
+        if forced_view and forced_view in view_options:
+            default_v_idx = view_options.index(forced_view)
+        elif not is_admin and current_spoc.title() in view_options:
             default_v_idx = view_options.index(current_spoc.title())
+        else:
+            default_v_idx = 0
 
         selected_perf_view = st.selectbox(
             "Select Performance View",
@@ -816,6 +850,7 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
             label_visibility="collapsed",
             key="plc_perf_view_selector_box"
         )
+        st.session_state.plc_perf_view = selected_perf_view
 
     # Compute stats based on selected view
     if selected_perf_view == "🌟 All Team Combined (Portal Total)":
@@ -898,7 +933,7 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
 
     st.markdown("<div style='margin-bottom: 14px;'></div>", unsafe_allow_html=True)
 
-    # Queue active student determination
+    # Active Queue determination
     if is_admin and selected_perf_view != "🌟 All Team Combined (Portal Total)":
         active_queue_students = scoped_students
     else:
@@ -923,9 +958,133 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
     total_assigned_queue = len(active_queue_students)
 
     # ==========================================================================
-    # 🎛️ IMAGE 2: ACTION BAR (⏮ #1 | ⬅ Prev | Next ➡ | 🧹 Clear Form | 🔄 Refresh DB)
+    # 📍 RESUME BANNER (WELCOME BACK / RESUME PROGRESS LIKE IMPACT ASSESSMENT)
     # ==========================================================================
-    c_start, c_prev, c_next, c_clear, c_refresh = st.columns([1, 1, 1, 1.2, 1.2])
+    if st.session_state.get("show_placement_resume_banner") and total_assigned_queue > 0 and current_q_idx > 0:
+        res_c1, res_c2, res_c3 = st.columns([3.2, 1.2, 1.2])
+        with res_c1:
+            st.info(f"📍 **Welcome back, {current_spoc.title()}!** Resumed at Target **#{current_q_idx + 1}** of {total_assigned_queue} ({v_pending} fresh calls pending).")
+        with res_c2:
+            if st.button("▶️ Continue Here", type="primary", use_container_width=True, key="plc_resume_continue"):
+                st.session_state.show_placement_resume_banner = False
+                st.rerun()
+        with res_c3:
+            if st.button("⏮️ Start from #1", use_container_width=True, key="plc_resume_start1"):
+                st.session_state.placement_queue_index = 0
+                st.session_state.show_placement_resume_banner = False
+                save_placement_progress(current_spoc, 0, active_queue_students[0]["contact_number"], active_call_index=st.session_state.get("placement_active_call_index", 0))
+                st.rerun()
+
+    if v_pending == 0:
+        st.success(f"🎉 **Outstanding work, {current_spoc.title()}!** All {v_assigned} assigned placement calls have been completed.")
+
+    # ==========================================================================
+    # 🎛️ IMAGE 2 & USER PIC: SEARCH & FETCH BAR + 5 NAVIGATION BUTTONS
+    # ==========================================================================
+    c_search, c_fetch, c_start, c_prev, c_next, c_clear, c_refresh = st.columns([2.6, 1.3, 0.85, 0.85, 0.85, 1.05, 1.05])
+
+    search_inp = c_search.text_input(
+        "Search or Target",
+        placeholder="Search phone or enter Target # (e.g. 71, 302)...",
+        label_visibility="collapsed",
+        key="plc_quick_search_input"
+    )
+
+    # ⚡ Fetch Details Button (Coral/Red primary button as in User Picture 2)
+    if c_fetch.button("⚡ Fetch Details", use_container_width=True, type="primary", key="plc_btn_fetch_details"):
+        target = search_inp.strip()
+        if target:
+            clean_num = target.lstrip("#").strip()
+            found_target = None
+            target_idx = None
+
+            # 1. Check if numeric target number (e.g. 71, 302, 1, 1153)
+            if clean_num.isdigit():
+                t_num = int(clean_num)
+                # Check within active queue first
+                if 1 <= t_num <= len(active_queue_students):
+                    target_idx = t_num - 1
+                    found_target = active_queue_students[target_idx]
+                else:
+                    # Search across all students
+                    for s in all_placement_students:
+                        if s["queue_index"] + 1 == t_num or s["row_num"] == t_num:
+                            found_target = s
+                            for a_idx, a_s in enumerate(active_queue_students):
+                                if a_s["row_num"] == s["row_num"]:
+                                    target_idx = a_idx
+                                    break
+                            break
+
+            # 2. Check if phone number
+            if not found_target:
+                c_phone = clean_phone(target)
+                if c_phone:
+                    for idx, s in enumerate(active_queue_students):
+                        if c_phone in clean_phone(s["contact_number"]) or c_phone in clean_phone(s["alt_contact_number"]):
+                            target_idx = idx
+                            found_target = s
+                            break
+                    if not found_target:
+                        for s in all_placement_students:
+                            if c_phone in clean_phone(s["contact_number"]) or c_phone in clean_phone(s["alt_contact_number"]):
+                                found_target = s
+                                break
+
+            # 3. Check if student name
+            if not found_target:
+                t_lower = target.lower()
+                for idx, s in enumerate(active_queue_students):
+                    if t_lower in s["student_name"].lower():
+                        target_idx = idx
+                        found_target = s
+                        break
+                if not found_target:
+                    for s in all_placement_students:
+                        if t_lower in s["student_name"].lower():
+                            found_target = s
+                            break
+
+            if found_target:
+                if target_idx is not None:
+                    st.session_state.placement_queue_index = target_idx
+                else:
+                    st.session_state.plc_perf_view = "🌟 All Team Combined (Portal Total)"
+                    st.session_state.plc_perf_view_selector_box = "🌟 All Team Combined (Portal Total)"
+                    st.session_state.placement_queue_index = found_target["queue_index"]
+
+                # If previously verified, load previous verification data for editing/updating!
+                r_num = found_target["row_num"]
+                if found_target.get("contactable"):
+                    st.session_state[f"plc_preset_{r_num}"] = {
+                        "contactable": "Yes" if found_target["contactable"].strip().lower() == "yes" else "No",
+                        "assessment_given": found_target["assessment_given"] or "YES",
+                        "got_certificate": found_target["got_certificate"] or "YES",
+                        "got_job_from_anudip": found_target["got_job_from_anudip"] or "YES",
+                        "retention_status": found_target["retention_status"] or "Working in same job",
+                        "months": found_target["how_many_months"] or "3 Months",
+                        "company": found_target["current_company"] or found_target["company_name"],
+                        "salary": found_target["current_salary"] or found_target["salary"],
+                        "designation": found_target["current_designation"] or found_target["designation"],
+                        "doj": parse_date_safe(found_target["current_doj"]) or parse_date_safe(found_target["doj"]) or date.today(),
+                        "need_further_job": found_target["need_further_job"] or "NO",
+                        "nps": found_target["nps"] or "10",
+                        "satisfied": found_target["satisfied_with_conversation"] or "Yes",
+                        "verification_date": parse_date_safe(found_target["verification_date"]) or date.today(),
+                        "left_remarks": found_target["left_not_working_remarks"],
+                        "not_joined_remarks": found_target["not_joined_remarks"],
+                        "nocont_reason": found_target["left_not_working_remarks"],
+                        "remarks_2": found_target["remarks_2"]
+                    }
+                    keys_to_clear = [k for k in st.session_state.keys() if f"_{r_num}" in k and k.startswith("plc_")]
+                    for k in keys_to_clear:
+                        st.session_state.pop(k, None)
+                    st.session_state.placement_editing_row = r_num
+
+                st.toast(f"Loaded Target #{found_target['queue_index']+1} ({found_target['student_name']})!", icon="⚡")
+                st.rerun()
+            else:
+                st.warning(f"No student record found matching '{target}'.")
 
     # 1. ⏮ #1 Button
     if c_start.button("⏮ #1", use_container_width=True, help="Jump to Target #1 (Queue beginning)", disabled=(current_q_idx == 0 or total_assigned_queue == 0)):
@@ -954,6 +1113,7 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
     if c_clear.button("🧹 Clear Form", use_container_width=True):
         row_k = current_student["row_num"]
         st.session_state.pop(f"plc_preset_{row_k}", None)
+        st.session_state.pop("placement_editing_row", None)
         keys_to_remove = [k for k in st.session_state.keys() if f"_{row_k}" in k and k.startswith("plc_")]
         for k in keys_to_remove:
             st.session_state.pop(k, None)
@@ -977,7 +1137,6 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
     phone_clean = clean_phone(current_student['contact_number'])
 
     with col_t1:
-        # High-Speed HTML Component with exact Green Outlined "Copy Phone Number" button & instant clipboard JS
         components.html(f"""
         <!DOCTYPE html>
         <html>
@@ -1147,7 +1306,6 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
         st.markdown(f"<div class='profile-label-styled' style='margin-top:10px;'>Designation</div><div class='profile-val-styled'>{current_student['designation']}</div>", unsafe_allow_html=True)
         st.markdown(f"<div class='profile-label-styled' style='margin-top:10px;'>Salary / Location</div><div class='profile-val-styled'>💰 ₹{current_student['salary']} &nbsp;·&nbsp; {current_student['job_location']}</div>", unsafe_allow_html=True)
 
-    # Distinct orange/amber accent bar matching Picture 3
     st.markdown('<div style="height: 4px; background: linear-gradient(90deg, #f59e0b 0%, #fbbf24 100%); border-radius: 2px; margin: 16px 0 16px 0;"></div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -1157,7 +1315,6 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
     ai_risk = compute_retention_risk_score(current_student)
 
     with st.expander("🤖 Local AI Calling Copilot & 1-Click Fast Presets (Click to Expand)", expanded=False):
-        # Clear reassurance that zero external API keys are required
         st.markdown("""
             <div style="background: #f0fdf4; border: 1.5px solid #86efac; border-left: 5px solid #16a34a; padding: 7px 12px; border-radius: 6px; margin-bottom: 10px; font-size: 0.85rem; color: #166534; font-weight: 700;">
                 ⚡ 100% Free Built-in Local AI: No API Key or Internet Needed. Runs locally on your machine with ZERO latency and zero cost.
@@ -1271,11 +1428,13 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
     # 📝 IMAGE 3 & 4: CALL VERIFICATION QUESTIONNAIRE (CONDITIONAL WORKFLOW)
     # ==========================================================================
     is_already_verified = bool(current_student["contactable"])
+    is_edit_mode = st.session_state.get("placement_editing_row") == current_student["row_num"]
+
     status_badge_html = f"""
-        <span style="background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 0.85rem;">
-            ✏️ RECORD PREVIOUSLY VERIFIED — UPDATE MODE (Row #{current_student['row_num']})
+        <span style="background: #fef3c7; color: #92400e; border: 1.5px solid #fcd34d; padding: 4px 12px; border-radius: 6px; font-weight: 800; font-size: 0.88rem;">
+            ✏️ EDIT & UPDATE MODE (Row #{current_student['row_num']})
         </span>
-    """ if is_already_verified else f"""
+    """ if (is_edit_mode or is_already_verified) else f"""
         <span style="background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 0.85rem;">
             🆕 FRESH CALL VERIFICATION (Target #{current_q_idx + 1})
         </span>
@@ -1290,6 +1449,17 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
             <div>{status_badge_html}</div>
         </div>
     """, unsafe_allow_html=True)
+
+    # Edit Mode Alert Banner (Loads previous values for update & insert per Item 1)
+    if is_edit_mode or is_already_verified:
+        st.markdown(f"""
+            <div style="background: #fffbeb; border: 1.5px solid #fde68a; border-left: 6px solid #d97706; padding: 10px 14px; border-radius: 8px; margin-bottom: 14px;">
+                <b style="color: #92400e; font-size: 0.98rem;">✏️ Reviewing & Updating Target #{current_q_idx + 1} — {current_student['student_name']} (Row #{current_student['row_num']}):</b>
+                <div style="color: #b45309; font-size: 0.85rem; margin-top: 2px;">
+                    Previously saved details are loaded below. Update any fields and click <b>Update & Insert Placement Verification</b> to save your changes to Google Sheets.
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
 
     row_preset = st.session_state.get(f"plc_preset_{current_student['row_num']}", {})
 
@@ -1345,7 +1515,7 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
             st.markdown('<div class="question-pill-header">Verification Date</div>', unsafe_allow_html=True)
             f_vdate_no = st.date_input(
                 "Verification Date",
-                value=parse_date_safe(current_student["verification_date"]) or date.today(),
+                value=parse_date_safe(row_preset.get("verification_date", current_student["verification_date"])) or date.today(),
                 label_visibility="collapsed",
                 key=f"plc_date_no_{current_student['row_num']}"
             )
@@ -1359,7 +1529,8 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
         )
 
         st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("💾 Submit Call Disposition (Not Contactable)", type="primary", use_container_width=True, key=f"plc_sub_no_{current_student['row_num']}"):
+        btn_label_no = f"💾 Update & Insert Disposition (Row #{current_student['row_num']})" if (is_already_verified or is_edit_mode) else "💾 Submit Call Disposition (Not Contactable)"
+        if st.button(btn_label_no, type="primary", use_container_width=True, key=f"plc_sub_no_{current_student['row_num']}"):
             with st.spinner("⚡ High Speed Sync to Google Sheets..."):
                 payload = [
                     "No",                         # Q: Contactable
@@ -1387,8 +1558,9 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
 
                     st.session_state.placement_live_history.insert(0, (current_student['row_num'], list(payload)))
                     st.session_state.placement_live_history = st.session_state.placement_live_history[:20]
+                    st.session_state.pop("placement_editing_row", None)
 
-                    st.toast(f"Saved Target #{current_q_idx + 1} ({current_student['student_name']}) as Not Contactable!", icon="✅")
+                    st.toast(f"✅ Saved Target #{current_q_idx + 1} ({current_student['student_name']}) as Not Contactable!", icon="✅")
 
                     if current_q_idx + 1 < total_assigned_queue:
                         st.session_state.placement_queue_index = current_q_idx + 1
@@ -1406,7 +1578,6 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
     else:
         st.markdown("<div style='margin-top: 14px;'></div>", unsafe_allow_html=True)
 
-        # PICTURE 3: 3 Questions Side-by-Side in Columns
         col_q1, col_q2, col_q3 = st.columns(3)
 
         with col_q1:
@@ -1469,13 +1640,6 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
             key=f"plc_sel_ret_{current_student['row_num']}"
         )
 
-        # ======================================================================
-        # CASCADING SECTION BASED ON RETENTION STATUS & USER SPECIFICATION
-        # ======================================================================
-        # User Rule 1: Working in Same Job OR Left The Job -> Company, Salary, Desig, DOJ Auto Fill-Up!
-        # User Rule 2: Working in Different Job -> All fields open & need to be updated!
-        # User Rule 3: Will joined after some days -> SPOC can also upload/enter company name & details!
-
         has_company_details = f_retention in [
             "Working in same job",
             "Working in different job",
@@ -1492,7 +1656,7 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
 
             c_emp1, c_emp2, c_emp3 = st.columns(3)
             with c_emp1:
-                def_months_idx = 2  # default 3 Months
+                def_months_idx = 2
                 existing_m = row_preset.get("months", current_student["how_many_months"])
                 if existing_m in PLACEMENT_MONTHS_OPTIONS:
                     def_months_idx = PLACEMENT_MONTHS_OPTIONS.index(existing_m)
@@ -1504,8 +1668,7 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                 )
 
             with c_emp2:
-                # AUTO-FILLED from placed company
-                def_comp = row_preset.get("company", current_student["company_name"])
+                def_comp = row_preset.get("company", current_student["current_company"] or current_student["company_name"])
                 f_company = st.text_input(
                     "7. Current Company Name (Auto-filled)",
                     value=def_comp,
@@ -1513,8 +1676,7 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                 )
 
             with c_emp3:
-                # AUTO-FILLED from placed salary
-                def_sal = row_preset.get("salary", current_student["salary"])
+                def_sal = row_preset.get("salary", current_student["current_salary"] or current_student["salary"])
                 f_salary = st.text_input(
                     "8. Current Salary / Month (Auto-filled)",
                     value=str(def_sal),
@@ -1523,8 +1685,7 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
 
             c_emp4, c_emp5, c_emp6 = st.columns(3)
             with c_emp4:
-                # AUTO-FILLED from placed designation
-                def_desig = row_preset.get("designation", current_student["designation"])
+                def_desig = row_preset.get("designation", current_student["current_designation"] or current_student["designation"])
                 f_designation = st.text_input(
                     "9. Current Designation (Auto-filled)",
                     value=def_desig,
@@ -1532,8 +1693,7 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                 )
 
             with c_emp5:
-                # AUTO-FILLED from placed DOJ
-                def_doj = row_preset.get("doj", parse_date_safe(current_student["doj"]) or date.today())
+                def_doj = row_preset.get("doj", parse_date_safe(current_student["current_doj"]) or parse_date_safe(current_student["doj"]) or date.today())
                 f_doj = st.date_input(
                     "10. DOJ (Current Job - Auto-filled)",
                     value=def_doj,
@@ -1555,7 +1715,6 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
             f_not_joined_remarks = "N/A"
 
         elif f_retention == "Left_The_Job":
-            # AUTO-FILL placed company details for Left_The_Job per user requirement!
             st.markdown("""
                 <div style="background: #fef2f2; border: 1.5px solid #fecaca; border-left: 5px solid #ef4444; padding: 10px 14px; border-radius: 8px; margin: 10px 0; color: #991b1b; font-size: 0.92rem; font-weight: 700;">
                     🚪 Left The Job: Placed company details auto-filled below. Please select the reason for leaving (Picture 4 Col 5):
@@ -1564,24 +1723,21 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
 
             c_lj1, c_lj2, c_lj3 = st.columns(3)
             with c_lj1:
-                # AUTO-FILLED placed company
-                def_comp = row_preset.get("company", current_student["company_name"])
+                def_comp = row_preset.get("company", current_student["current_company"] or current_student["company_name"])
                 f_company = st.text_input(
                     "Placed Company Left (Auto-filled)",
                     value=def_comp,
                     key=f"plc_txt_comp_{current_student['row_num']}"
                 )
             with c_lj2:
-                # AUTO-FILLED placed salary
-                def_sal = row_preset.get("salary", current_student["salary"])
+                def_sal = row_preset.get("salary", current_student["current_salary"] or current_student["salary"])
                 f_salary = st.text_input(
                     "Last Salary / Month (Auto-filled)",
                     value=str(def_sal),
                     key=f"plc_txt_sal_{current_student['row_num']}"
                 )
             with c_lj3:
-                # AUTO-FILLED placed designation
-                def_desig = row_preset.get("designation", current_student["designation"])
+                def_desig = row_preset.get("designation", current_student["current_designation"] or current_student["designation"])
                 f_designation = st.text_input(
                     "Designation Left (Auto-filled)",
                     value=def_desig,
@@ -1590,8 +1746,7 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
 
             c_lj4, c_lj5 = st.columns(2)
             with c_lj4:
-                # AUTO-FILLED placed DOJ
-                def_doj = row_preset.get("doj", parse_date_safe(current_student["doj"]) or date.today())
+                def_doj = row_preset.get("doj", parse_date_safe(current_student["current_doj"]) or parse_date_safe(current_student["doj"]) or date.today())
                 f_doj = st.date_input(
                     "Date of Joining (DOJ - Auto-filled)",
                     value=def_doj,
@@ -1599,16 +1754,15 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                 )
             with c_lj5:
                 def_further_val = row_preset.get("need_further_job", current_student["need_further_job"]).upper()
-                def_further_idx = 0 if def_further_val == "YES" else 1
+                def_further_idx = 1 if def_further_val == "NO" else 0
                 f_further_job = st.radio(
-                    "Need Another Job Assistance?",
+                    "11. Need Any Further Job?",
                     ["YES", "NO"],
                     index=def_further_idx,
                     horizontal=True,
                     key=f"plc_rad_further_{current_student['row_num']}"
                 )
 
-            # Left The Job Reason dropdown (Image 4 Column 5)
             existing_left = row_preset.get("left_remarks", current_student["left_not_working_remarks"].strip())
             def_left_idx = 0
             if existing_left in PLACEMENT_LEFT_JOB_OPTIONS:
@@ -1624,7 +1778,6 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
             f_not_joined_remarks = "N/A"
 
         elif f_retention == "Working in different job":
-            # Working in different job -> All fields open & need to be updated!
             st.markdown("""
                 <div style="background: #eff6ff; border: 1.5px solid #bfdbfe; border-left: 5px solid #2563eb; padding: 10px 14px; border-radius: 8px; margin: 10px 0; color: #1e40af; font-size: 0.92rem; font-weight: 700;">
                     🔄 Working in Different Job: Please update all new company details, designation, and salary below:
@@ -1645,7 +1798,6 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                 )
 
             with c_emp2:
-                # Open / Blank for new company entry
                 saved_comp = current_student["current_company"] if current_student["current_company"] != current_student["company_name"] else ""
                 def_comp = row_preset.get("company", saved_comp)
                 f_company = st.text_input(
@@ -1656,7 +1808,6 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                 )
 
             with c_emp3:
-                # Open / Blank for new salary entry
                 saved_sal = current_student["current_salary"] if current_student["current_salary"] != current_student["salary"] else ""
                 def_sal = row_preset.get("salary", saved_sal)
                 f_salary = st.text_input(
@@ -1668,7 +1819,6 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
 
             c_emp4, c_emp5, c_emp6 = st.columns(3)
             with c_emp4:
-                # Open / Blank for new designation entry
                 saved_desig = current_student["current_designation"] if current_student["current_designation"] != current_student["designation"] else ""
                 def_desig = row_preset.get("designation", saved_desig)
                 f_designation = st.text_input(
@@ -1701,7 +1851,6 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
             f_not_joined_remarks = "N/A"
 
         elif f_retention == "Will joined after some days":
-            # Will joined after some days -> SPOC Can Also Upload/Enter the Company Name & Details!
             st.markdown("""
                 <div style="background: #fdf4ff; border: 1.5px solid #f0abfc; border-left: 5px solid #c026d3; padding: 10px 14px; border-radius: 8px; margin: 10px 0; color: #86198f; font-size: 0.92rem; font-weight: 700;">
                     📅 Will Join Upcoming Job: Enter or confirm joining company and onboarding details below:
@@ -1710,7 +1859,6 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
 
             c_wj1, c_wj2, c_wj3 = st.columns(3)
             with c_wj1:
-                # Defaulted to placed company, or editable if joining another company
                 def_comp = row_preset.get("company", current_student["current_company"] or current_student["company_name"])
                 f_company = st.text_input(
                     "Joining Company Name",
@@ -1761,9 +1909,9 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
 
             with c_wj6:
                 def_further_val = row_preset.get("need_further_job", current_student["need_further_job"]).upper()
-                def_further_idx = 1 if def_further_val != "YES" else 0
+                def_further_idx = 0 if def_further_val == "YES" else 1
                 f_further_job = st.radio(
-                    "Need Any Further Job?",
+                    "11. Need Any Further Job?",
                     ["YES", "NO"],
                     index=def_further_idx,
                     horizontal=True,
@@ -1774,14 +1922,13 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
             f_not_joined_remarks = "N/A"
 
         elif f_retention == "Not_working_at_all":
-            # Not working at all (Picture 4 Col 1 & Col 3, Col 4)
             st.markdown("""
                 <div style="background: #fff7ed; border: 1px solid #fed7aa; padding: 10px 14px; border-radius: 8px; margin: 10px 0; color: #9a3412; font-size: 0.92rem; font-weight: 700;">
                     ⚠️ Student Not Working At All — Select Reasons from Picture 4:
                 </div>
             """, unsafe_allow_html=True)
 
-            c_nw1, c_nw2 = st.columns(2)
+            c_nw1, c_nw2, c_nw3 = st.columns([1.4, 1.4, 1.1])
             with c_nw1:
                 existing_left = row_preset.get("left_remarks", current_student["left_not_working_remarks"].strip())
                 def_nw_idx = 0
@@ -1796,7 +1943,6 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                 )
 
             with c_nw2:
-                # Dynamic sub-reasons (Col 3 or Col 4 of Picture 4)
                 if f_left_remarks == "Did_not_joined_job_due_to_personal_issue":
                     sub_options = PLACEMENT_NOT_JOINED_PERSONAL_OPTIONS
                     sub_lbl = "13. Personal Issue Detail (Picture 4 Col 3)"
@@ -1819,15 +1965,36 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                     key=f"plc_sel_sub_rem_{current_student['row_num']}"
                 )
 
+            with c_nw3:
+                def_further_val = row_preset.get("need_further_job", current_student["need_further_job"]).upper()
+                def_further_idx = 1 if def_further_val == "NO" else 0
+                f_further_job = st.radio(
+                    "11. Need Any Further Job?",
+                    ["YES", "NO"],
+                    index=def_further_idx,
+                    horizontal=True,
+                    key=f"plc_rad_further_{current_student['row_num']}"
+                )
+
             f_company = ""
             f_salary = ""
             f_designation = ""
             f_doj = ""
             f_months = ""
-            f_further_job = "NO"
 
-        else: # Confirmed Name But Didn't Share Any Information.
+        else:
             st.info("ℹ️ Student confirmed name but declined to disclose current employment or salary.")
+            c_cn1, _ = st.columns([1.2, 2.0])
+            with c_cn1:
+                def_further_val = row_preset.get("need_further_job", current_student["need_further_job"]).upper()
+                def_further_idx = 0 if def_further_val == "YES" else 1
+                f_further_job = st.radio(
+                    "11. Need Any Further Job?",
+                    ["YES", "NO"],
+                    index=def_further_idx,
+                    horizontal=True,
+                    key=f"plc_rad_further_{current_student['row_num']}"
+                )
             f_left_remarks = "Confirmed Name But Didn't Share Any Information."
             f_not_joined_remarks = "N/A"
             f_company = ""
@@ -1835,7 +2002,6 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
             f_designation = ""
             f_doj = ""
             f_months = ""
-            f_further_job = "NO"
 
         st.markdown("<hr style='margin: 16px 0;'>", unsafe_allow_html=True)
         st.markdown("<div style='font-weight: 700; color: #0f4c81; font-size: 1.02rem; margin-bottom: 8px;'>⭐ Feedback, NPS & SPOC Notes</div>", unsafe_allow_html=True)
@@ -1868,7 +2034,7 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
         with c_fb3:
             f_vdate = st.date_input(
                 "16. Verification Date",
-                value=parse_date_safe(current_student["verification_date"]) or date.today(),
+                value=parse_date_safe(row_preset.get("verification_date", current_student["verification_date"])) or date.today(),
                 key=f"plc_date_vdate_{current_student['row_num']}"
             )
 
@@ -1881,7 +2047,8 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
         )
 
         st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("💾 Submit Placement Verification", type="primary", use_container_width=True, key=f"plc_btn_submit_{current_student['row_num']}"):
+        btn_submit_label = f"💾 Update & Insert Placement Verification (Row #{current_student['row_num']})" if (is_edit_mode or is_already_verified) else "💾 Submit Placement Verification"
+        if st.button(btn_submit_label, type="primary", use_container_width=True, key=f"plc_btn_submit_{current_student['row_num']}"):
             with st.spinner("⚡ High Speed Sync to Google Sheets..."):
                 payload = [
                     "Yes",                                                      # Q: Contactable
@@ -1894,7 +2061,7 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                     str(f_salary) if has_company_details else "",               # X: Current Salary
                     f_designation if has_company_details else "",               # Y: Current Designation
                     str(f_doj) if has_company_details else "",                  # Z: DOJ
-                    f_further_job if has_company_details else "NO",             # AA: Need any further job
+                    f_further_job,                                              # AA: Need any further job
                     str(f_nps),                                                 # AB: Net Promoter Score
                     str(f_vdate),                                               # AC: Verification Date
                     f_left_remarks,                                             # AD: Left The Job /Not Working/Not - Contactable Remarks
@@ -1909,8 +2076,9 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
 
                     st.session_state.placement_live_history.insert(0, (current_student['row_num'], list(payload)))
                     st.session_state.placement_live_history = st.session_state.placement_live_history[:20]
+                    st.session_state.pop("placement_editing_row", None)
 
-                    st.toast(f"✅ Target #{current_q_idx + 1} ({current_student['student_name']}) saved successfully to Google Sheets!", icon="🎯")
+                    st.toast(f"✅ Target #{current_q_idx + 1} ({current_student['student_name']}) updated and inserted successfully in Google Sheets!", icon="🎯")
 
                     if current_q_idx + 1 < total_assigned_queue:
                         st.session_state.placement_queue_index = current_q_idx + 1
@@ -1942,25 +2110,55 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
         if r_num in live_map:
             l_data = live_map[r_num]
             called_records.append({
+                "student_obj": s,
                 "target_num": s["queue_index"] + 1,
                 "row_num": r_num,
                 "student_name": s["student_name"],
                 "contact_number": s["contact_number"],
                 "company_name": s["company_name"],
-                "contactable": l_data[0],
-                "retention": l_data[4] if len(l_data) > 4 else "",
-                "remarks": l_data[13] if len(l_data) > 13 else ""
+                "contactable": l_data[0] if len(l_data) > 0 else s["contactable"],
+                "assessment_given": l_data[1] if len(l_data) > 1 else s["assessment_given"],
+                "got_certificate": l_data[2] if len(l_data) > 2 else s["got_certificate"],
+                "got_job_from_anudip": l_data[3] if len(l_data) > 3 else s["got_job_from_anudip"],
+                "retention": l_data[4] if len(l_data) > 4 else s["retention_status"],
+                "months": l_data[5] if len(l_data) > 5 else s["how_many_months"],
+                "current_company": l_data[6] if len(l_data) > 6 else s["current_company"],
+                "current_salary": l_data[7] if len(l_data) > 7 else s["current_salary"],
+                "current_designation": l_data[8] if len(l_data) > 8 else s["current_designation"],
+                "current_doj": l_data[9] if len(l_data) > 9 else s["current_doj"],
+                "need_further_job": l_data[10] if len(l_data) > 10 else s["need_further_job"],
+                "nps": l_data[11] if len(l_data) > 11 else s["nps"],
+                "verification_date": l_data[12] if len(l_data) > 12 else s["verification_date"],
+                "remarks": l_data[13] if len(l_data) > 13 else s["left_not_working_remarks"],
+                "not_joined_remarks": l_data[14] if len(l_data) > 14 else s["not_joined_remarks"],
+                "satisfied": l_data[15] if len(l_data) > 15 else s["satisfied_with_conversation"],
+                "remarks_2": l_data[16] if len(l_data) > 16 else s["remarks_2"]
             })
         elif s["contactable"]:
             called_records.append({
+                "student_obj": s,
                 "target_num": s["queue_index"] + 1,
                 "row_num": r_num,
                 "student_name": s["student_name"],
                 "contact_number": s["contact_number"],
                 "company_name": s["company_name"],
                 "contactable": s["contactable"],
+                "assessment_given": s["assessment_given"],
+                "got_certificate": s["got_certificate"],
+                "got_job_from_anudip": s["got_job_from_anudip"],
                 "retention": s["retention_status"],
-                "remarks": s["left_not_working_remarks"]
+                "months": s["how_many_months"],
+                "current_company": s["current_company"],
+                "current_salary": s["current_salary"],
+                "current_designation": s["current_designation"],
+                "current_doj": s["current_doj"],
+                "need_further_job": s["need_further_job"],
+                "nps": s["nps"],
+                "verification_date": s["verification_date"],
+                "remarks": s["left_not_working_remarks"],
+                "not_joined_remarks": s["not_joined_remarks"],
+                "satisfied": s["satisfied_with_conversation"],
+                "remarks_2": s["remarks_2"]
             })
 
     latest_5 = list(reversed(called_records))[:5]
@@ -1977,9 +2175,58 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
             with c_r3:
                 st.markdown(f"*{it['company_name']}*<br><small style='color: #64748b;'>{it['retention'] or it['remarks'] or 'Verified'}</small>", unsafe_allow_html=True)
             with c_r4:
+                # ✏️ Edit Button: Loads previous verification form so user can view, update and insert!
                 if st.button("✏️ Edit", key=f"plc_edit_{it['row_num']}", use_container_width=True):
-                    st.session_state.placement_queue_index = it["target_num"] - 1
-                    save_placement_progress(current_spoc, it["target_num"] - 1, it["contact_number"], active_call_index=st.session_state.get("placement_active_call_index", 0))
+                    # Locate student index in active_queue_students
+                    target_idx = None
+                    for a_i, a_s in enumerate(active_queue_students):
+                        if a_s["row_num"] == it["row_num"]:
+                            target_idx = a_i
+                            break
+
+                    if target_idx is not None:
+                        st.session_state.placement_queue_index = target_idx
+                    else:
+                        st.session_state.plc_perf_view = "🌟 All Team Combined (Portal Total)"
+                        st.session_state.plc_perf_view_selector_box = "🌟 All Team Combined (Portal Total)"
+                        global_idx = 0
+                        for g_i, g_s in enumerate(all_placement_students):
+                            if g_s["row_num"] == it["row_num"]:
+                                global_idx = g_i
+                                break
+                        st.session_state.placement_queue_index = global_idx
+
+                    row_k = it["row_num"]
+                    # Store ALL previously verified values into preset for this row!
+                    st.session_state[f"plc_preset_{row_k}"] = {
+                        "contactable": "Yes" if str(it["contactable"]).strip().lower() == "yes" else "No",
+                        "assessment_given": str(it.get("assessment_given", "YES")).upper(),
+                        "got_certificate": str(it.get("got_certificate", "YES")).upper(),
+                        "got_job_from_anudip": str(it.get("got_job_from_anudip", "YES")).upper(),
+                        "retention_status": it["retention"] or "Working in same job",
+                        "months": it.get("months", "3 Months"),
+                        "company": it.get("current_company") or it["company_name"],
+                        "salary": it.get("current_salary") or it["student_obj"].get("salary", ""),
+                        "designation": it.get("current_designation") or it["student_obj"].get("designation", ""),
+                        "doj": parse_date_safe(it.get("current_doj")) or parse_date_safe(it["student_obj"].get("doj")) or date.today(),
+                        "need_further_job": str(it.get("need_further_job", "NO")).upper(),
+                        "nps": str(it.get("nps", "10")),
+                        "satisfied": it.get("satisfied", "Yes"),
+                        "verification_date": parse_date_safe(it.get("verification_date")) or date.today(),
+                        "left_remarks": it["remarks"],
+                        "not_joined_remarks": it.get("not_joined_remarks", "N/A"),
+                        "nocont_reason": it["remarks"] if str(it["contactable"]).lower() == "no" else "",
+                        "remarks_2": it.get("remarks_2", "")
+                    }
+
+                    # Clear old widget state keys for this row so Streamlit forces re-read from preset
+                    for k in list(st.session_state.keys()):
+                        if f"_{row_k}" in k and k.startswith("plc_"):
+                            st.session_state.pop(k, None)
+
+                    st.session_state.placement_editing_row = it["row_num"]
+                    save_placement_progress(current_spoc, st.session_state.placement_queue_index, it["contact_number"], active_call_index=st.session_state.get("placement_active_call_index", 0))
+                    st.toast(f"Loaded previous record for {it['student_name']}! Ready for update & insert.", icon="✏️")
                     st.rerun()
 
     st.markdown('</div>', unsafe_allow_html=True)
