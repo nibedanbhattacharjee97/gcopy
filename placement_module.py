@@ -121,6 +121,30 @@ PLACEMENT_NPS_OPTIONS = [
     "10", "9", "8", "7", "6", "5", "4", "3", "2", "1", "0", "Don't Want To Share"
 ]
 
+PLACEMENT_TRI_STATE_OPTIONS = [
+    "YES",
+    "NO",
+    "Don't Share"
+]
+
+def normalize_tri_val(val, default="YES"):
+    v = (val or "").strip()
+    if any(k in v.upper() for k in ["DONT", "DON'T", "DIDNT", "DIDN'T", "REFUSE", "SHARE"]):
+        return "Don't Share"
+    if v.upper() == "NO":
+        return "NO"
+    if v.upper() == "YES":
+        return "YES"
+    return default
+
+def get_tri_option_index(val, default="YES"):
+    norm = normalize_tri_val(val, default)
+    if norm == "Don't Share":
+        return 2
+    if norm == "NO":
+        return 1
+    return 0
+
 # ==============================================================================
 # 🛠️ HELPER FUNCTIONS
 # ==============================================================================
@@ -524,19 +548,25 @@ def ai_parse_call_notes(raw_notes: str, student_info: dict) -> dict:
     extracted["contactable"] = "Yes"
 
     # 2. Assessment
-    if "assessment no" in text or "not given assessment" in text or "assessment fail" in text:
+    if any(k in text for k in ["assessment dont share", "assessment don't share", "assessment didn't share", "refused assessment"]):
+        extracted["assessment_given"] = "Don't Share"
+    elif "assessment no" in text or "not given assessment" in text or "assessment fail" in text:
         extracted["assessment_given"] = "NO"
     else:
         extracted["assessment_given"] = "YES"
 
     # 3. Certificate
-    if "no certificate" in text or "didn't get certificate" in text or "certificate not received" in text:
+    if any(k in text for k in ["cert dont share", "certificate dont share", "certificate don't share", "refused certificate"]):
+        extracted["got_certificate"] = "Don't Share"
+    elif "no certificate" in text or "didn't get certificate" in text or "certificate not received" in text:
         extracted["got_certificate"] = "NO"
     else:
         extracted["got_certificate"] = "YES"
 
     # 4. Got Job from Anudip
-    if "self placed" in text or "got job outside" in text or "job not from anudip" in text:
+    if any(k in text for k in ["job source dont share", "job from anudip dont share", "job from anudip don't share"]):
+        extracted["got_job_from_anudip"] = "Don't Share"
+    elif "self placed" in text or "got job outside" in text or "job not from anudip" in text:
         extracted["got_job_from_anudip"] = "NO"
     else:
         extracted["got_job_from_anudip"] = "YES"
@@ -610,7 +640,9 @@ def ai_parse_call_notes(raw_notes: str, student_info: dict) -> dict:
         extracted["satisfied"] = "Yes"
 
     # Need further job
-    if any(k in text for k in ["need job", "looking for job", "needs another job", "better opportunity"]):
+    if any(k in text for k in ["further job dont share", "further job don't share", "job dont share", "job don't share"]):
+        extracted["need_further_job"] = "Don't Share"
+    elif any(k in text for k in ["need job", "looking for job", "needs another job", "better opportunity"]):
         extracted["need_further_job"] = "YES"
     else:
         extracted["need_further_job"] = "NO"
@@ -1058,16 +1090,16 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                 if found_target.get("contactable"):
                     st.session_state[f"plc_preset_{r_num}"] = {
                         "contactable": "Yes" if found_target["contactable"].strip().lower() == "yes" else "No",
-                        "assessment_given": found_target["assessment_given"] or "YES",
-                        "got_certificate": found_target["got_certificate"] or "YES",
-                        "got_job_from_anudip": found_target["got_job_from_anudip"] or "YES",
+                        "assessment_given": normalize_tri_val(found_target["assessment_given"], "YES"),
+                        "got_certificate": normalize_tri_val(found_target["got_certificate"], "YES"),
+                        "got_job_from_anudip": normalize_tri_val(found_target["got_job_from_anudip"], "YES"),
                         "retention_status": found_target["retention_status"] or "Working in same job",
                         "months": found_target["how_many_months"] or "3 Months",
                         "company": found_target["current_company"] or found_target["company_name"],
                         "salary": found_target["current_salary"] or found_target["salary"],
                         "designation": found_target["current_designation"] or found_target["designation"],
                         "doj": parse_date_safe(found_target["current_doj"]) or parse_date_safe(found_target["doj"]) or date.today(),
-                        "need_further_job": found_target["need_further_job"] or "NO",
+                        "need_further_job": normalize_tri_val(found_target["need_further_job"], "NO"),
                         "nps": found_target["nps"] or "10",
                         "satisfied": found_target["satisfied_with_conversation"] or "Yes",
                         "verification_date": parse_date_safe(found_target["verification_date"]) or date.today(),
@@ -1582,11 +1614,11 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
 
         with col_q1:
             st.markdown('<div class="question-pill-header">Assessment Given?</div>', unsafe_allow_html=True)
-            def_ass_val = row_preset.get("assessment_given", current_student["assessment_given"]).upper()
-            def_ass_idx = 0 if def_ass_val != "NO" else 1
+            def_ass_val = row_preset.get("assessment_given", current_student["assessment_given"])
+            def_ass_idx = get_tri_option_index(def_ass_val, default="YES")
             f_assessment = st.radio(
                 "Assessment Given?",
-                ["YES", "NO"],
+                PLACEMENT_TRI_STATE_OPTIONS,
                 index=def_ass_idx,
                 horizontal=False,
                 label_visibility="collapsed",
@@ -1595,11 +1627,11 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
 
         with col_q2:
             st.markdown('<div class="question-pill-header">Got Certificate?</div>', unsafe_allow_html=True)
-            def_cert_val = row_preset.get("got_certificate", current_student["got_certificate"]).upper()
-            def_cert_idx = 0 if def_cert_val != "NO" else 1
+            def_cert_val = row_preset.get("got_certificate", current_student["got_certificate"])
+            def_cert_idx = get_tri_option_index(def_cert_val, default="YES")
             f_certificate = st.radio(
                 "Got Certificate?",
-                ["YES", "NO"],
+                PLACEMENT_TRI_STATE_OPTIONS,
                 index=def_cert_idx,
                 horizontal=False,
                 label_visibility="collapsed",
@@ -1608,11 +1640,11 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
 
         with col_q3:
             st.markdown('<div class="question-pill-header">Got This Job From Anudip?</div>', unsafe_allow_html=True)
-            def_job_val = row_preset.get("got_job_from_anudip", current_student["got_job_from_anudip"]).upper()
-            def_got_job_idx = 0 if def_job_val != "NO" else 1
+            def_job_val = row_preset.get("got_job_from_anudip", current_student["got_job_from_anudip"])
+            def_got_job_idx = get_tri_option_index(def_job_val, default="YES")
             f_got_job = st.radio(
                 "Got This Job From Anudip?",
-                ["YES", "NO"],
+                PLACEMENT_TRI_STATE_OPTIONS,
                 index=def_got_job_idx,
                 horizontal=False,
                 label_visibility="collapsed",
@@ -1701,11 +1733,11 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                 )
 
             with c_emp6:
-                def_further_val = row_preset.get("need_further_job", current_student["need_further_job"]).upper()
-                def_further_idx = 1 if def_further_val != "YES" else 0
+                def_further_val = row_preset.get("need_further_job", current_student["need_further_job"])
+                def_further_idx = get_tri_option_index(def_further_val, default="NO")
                 f_further_job = st.radio(
                     "11. Need Any Further Job?",
-                    ["YES", "NO"],
+                    PLACEMENT_TRI_STATE_OPTIONS,
                     index=def_further_idx,
                     horizontal=True,
                     key=f"plc_rad_further_{current_student['row_num']}"
@@ -1753,11 +1785,11 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                     key=f"plc_date_doj_{current_student['row_num']}"
                 )
             with c_lj5:
-                def_further_val = row_preset.get("need_further_job", current_student["need_further_job"]).upper()
-                def_further_idx = 1 if def_further_val == "NO" else 0
+                def_further_val = row_preset.get("need_further_job", current_student["need_further_job"])
+                def_further_idx = get_tri_option_index(def_further_val, default="YES")
                 f_further_job = st.radio(
                     "11. Need Any Further Job?",
-                    ["YES", "NO"],
+                    PLACEMENT_TRI_STATE_OPTIONS,
                     index=def_further_idx,
                     horizontal=True,
                     key=f"plc_rad_further_{current_student['row_num']}"
@@ -1837,11 +1869,11 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                 )
 
             with c_emp6:
-                def_further_val = row_preset.get("need_further_job", current_student["need_further_job"]).upper()
-                def_further_idx = 1 if def_further_val != "YES" else 0
+                def_further_val = row_preset.get("need_further_job", current_student["need_further_job"])
+                def_further_idx = get_tri_option_index(def_further_val, default="NO")
                 f_further_job = st.radio(
                     "11. Need Any Further Job?",
-                    ["YES", "NO"],
+                    PLACEMENT_TRI_STATE_OPTIONS,
                     index=def_further_idx,
                     horizontal=True,
                     key=f"plc_rad_further_{current_student['row_num']}"
@@ -1908,11 +1940,11 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                 )
 
             with c_wj6:
-                def_further_val = row_preset.get("need_further_job", current_student["need_further_job"]).upper()
-                def_further_idx = 0 if def_further_val == "YES" else 1
+                def_further_val = row_preset.get("need_further_job", current_student["need_further_job"])
+                def_further_idx = get_tri_option_index(def_further_val, default="NO")
                 f_further_job = st.radio(
                     "11. Need Any Further Job?",
-                    ["YES", "NO"],
+                    PLACEMENT_TRI_STATE_OPTIONS,
                     index=def_further_idx,
                     horizontal=True,
                     key=f"plc_rad_further_{current_student['row_num']}"
@@ -1966,11 +1998,11 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                 )
 
             with c_nw3:
-                def_further_val = row_preset.get("need_further_job", current_student["need_further_job"]).upper()
-                def_further_idx = 1 if def_further_val == "NO" else 0
+                def_further_val = row_preset.get("need_further_job", current_student["need_further_job"])
+                def_further_idx = get_tri_option_index(def_further_val, default="YES")
                 f_further_job = st.radio(
                     "11. Need Any Further Job?",
-                    ["YES", "NO"],
+                    PLACEMENT_TRI_STATE_OPTIONS,
                     index=def_further_idx,
                     horizontal=True,
                     key=f"plc_rad_further_{current_student['row_num']}"
@@ -1984,13 +2016,13 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
 
         else:
             st.info("ℹ️ Student confirmed name but declined to disclose current employment or salary.")
-            c_cn1, _ = st.columns([1.2, 2.0])
+            c_cn1, _ = st.columns([1.8, 1.4])
             with c_cn1:
-                def_further_val = row_preset.get("need_further_job", current_student["need_further_job"]).upper()
-                def_further_idx = 0 if def_further_val == "YES" else 1
+                def_further_val = row_preset.get("need_further_job", current_student["need_further_job"])
+                def_further_idx = get_tri_option_index(def_further_val, default="Don't Share")
                 f_further_job = st.radio(
                     "11. Need Any Further Job?",
-                    ["YES", "NO"],
+                    PLACEMENT_TRI_STATE_OPTIONS,
                     index=def_further_idx,
                     horizontal=True,
                     key=f"plc_rad_further_{current_student['row_num']}"
@@ -2200,16 +2232,16 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                     # Store ALL previously verified values into preset for this row!
                     st.session_state[f"plc_preset_{row_k}"] = {
                         "contactable": "Yes" if str(it["contactable"]).strip().lower() == "yes" else "No",
-                        "assessment_given": str(it.get("assessment_given", "YES")).upper(),
-                        "got_certificate": str(it.get("got_certificate", "YES")).upper(),
-                        "got_job_from_anudip": str(it.get("got_job_from_anudip", "YES")).upper(),
+                        "assessment_given": normalize_tri_val(it.get("assessment_given"), "YES"),
+                        "got_certificate": normalize_tri_val(it.get("got_certificate"), "YES"),
+                        "got_job_from_anudip": normalize_tri_val(it.get("got_job_from_anudip"), "YES"),
                         "retention_status": it["retention"] or "Working in same job",
                         "months": it.get("months", "3 Months"),
                         "company": it.get("current_company") or it["company_name"],
                         "salary": it.get("current_salary") or it["student_obj"].get("salary", ""),
                         "designation": it.get("current_designation") or it["student_obj"].get("designation", ""),
                         "doj": parse_date_safe(it.get("current_doj")) or parse_date_safe(it["student_obj"].get("doj")) or date.today(),
-                        "need_further_job": str(it.get("need_further_job", "NO")).upper(),
+                        "need_further_job": normalize_tri_val(it.get("need_further_job"), "NO"),
                         "nps": str(it.get("nps", "10")),
                         "satisfied": it.get("satisfied", "Yes"),
                         "verification_date": parse_date_safe(it.get("verification_date")) or date.today(),
