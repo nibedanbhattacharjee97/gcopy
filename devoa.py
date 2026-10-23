@@ -10,6 +10,12 @@ import json
 import os
 import re
 import time
+from placement_module import (
+    render_placement_dashboard,
+    fetch_placement_master_data,
+    get_placement_students_for_spoc,
+    get_saved_placement_index
+)
 
 # ==============================================================================
 # ⚙️ PAGE CONFIG & ULTRA-FAST PERFORMANCE SETUP
@@ -266,11 +272,22 @@ def get_sheets_connection():
     creds = load_credentials(scope)
     gc = gspread.authorize(creds)
     
-    # Open required sheets
+    # Open required sheets for Impact Assessment
     master_ws = gc.open("Test").sheet1
     auth_ws = gc.open("Test_Spoc_PassWord").sheet1
     lookup_ws = gc.open("Test2").sheet1
     alloc_ws = gc.open("Test3").sheet1
+
+    # Open dedicated Placement Verification Sheet (Never uses test/test1/test2/test3/test4)
+    placement_ws = None
+    try:
+        placement_sh = gc.open_by_key("1lNVa5ELW7GR7vg3iPAedO5Ysy9UjcJM7l0-2vyDR5J8")
+        placement_ws = placement_sh.worksheet("Placement_Verification")
+    except Exception:
+        try:
+            placement_ws = gc.open("Placement_Verification").sheet1
+        except Exception:
+            placement_ws = None
     
     # Synchronize Test headers if needed
     try:
@@ -284,7 +301,8 @@ def get_sheets_connection():
         "master": master_ws,
         "auth": auth_ws,
         "lookup": lookup_ws,
-        "allocation": alloc_ws
+        "allocation": alloc_ws,
+        "placement": placement_ws
     }
 
 sheets = get_sheets_connection()
@@ -973,6 +991,8 @@ if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "user" not in st.session_state:
     st.session_state.user = ""
+if "call_type" not in st.session_state:
+    st.session_state.call_type = "Placement"
 if "allocated_numbers" not in st.session_state:
     st.session_state.allocated_numbers = []
 if "queue_index" not in st.session_state:
@@ -1151,51 +1171,79 @@ if not st.session_state.logged_in:
     cols = st.columns([1, 2, 1])
     with cols[1]:
         st.markdown("""
-            <div style="text-align: center; margin-bottom: 1.5rem;">
+            <div style="text-align: center; margin-bottom: 1.2rem;">
                 <h2 style="color: #0f4c81; margin-bottom: 0.2rem;">⚡ High Speed Verification System v4.0</h2>
-                <p style="color: #64748b; font-size: 0.95rem;">Non-Placed Graduates Livelihood Study | Anudip Foundation</p>
+                <p style="color: #64748b; font-size: 0.95rem;">Multi-Project Telecalling & Verification Portal | Anudip Foundation</p>
             </div>
         """, unsafe_allow_html=True)
+
+        # Call Type Selector BEFORE Login
+        call_type_options = ["Placement", "Impact Assessment", "Enrollment", "Retention"]
+        def_ct_idx = call_type_options.index(st.session_state.get("call_type", "Placement")) if st.session_state.get("call_type") in call_type_options else 0
+        selected_call_type = st.selectbox(
+            "Select Call Type",
+            call_type_options,
+            index=def_ct_idx,
+            key="login_call_type_selector",
+            help="Choose which telecalling project you are verifying."
+        )
+        st.session_state.call_type = selected_call_type
+
+        if selected_call_type in ["Enrollment", "Retention"]:
+            st.info(f"ℹ️ **{selected_call_type} Call Module** is scheduled for upcoming rollout. Please select **Placement** or **Impact Assessment** to proceed.")
+
         tab_log, tab_reg = st.tabs(["🔐 Login", "🆕 Register"])
         with tab_log:
             u = st.text_input("SPOC Name", key="login_user")
             p = st.text_input("Password", type="password", key="login_pass")
             if st.button("Access System", use_container_width=True, type="primary"):
-                auth_recs = fetch_auth_data()
-                match = next((r for r in auth_recs if str(r.get("spoc_name")).strip().lower() == u.strip().lower()), None)
-                if match and match.get("password") == hash_password(p):
-                    st.session_state.logged_in = True
-                    st.session_state.user = u.strip()
-                    
-                    alloc_data = fetch_allocation_data()
-                    spoc_numbers = [
-                        str(r.get("phone_number")).strip() for r in alloc_data 
-                        if str(r.get("SPOC_Name")).strip().lower() == u.strip().lower() and r.get("phone_number")
-                    ]
-                    st.session_state.allocated_numbers = spoc_numbers
-                    
-                    saved_idx, saved_active = get_spoc_saved_index(u, spoc_numbers)
-                    highest_verified = get_spoc_highest_verified_index(u, spoc_numbers)
-                    if highest_verified >= 0 and (highest_verified + 1) < len(spoc_numbers):
-                        effective_active = max(saved_active, highest_verified + 1)
-                    else:
-                        effective_active = saved_active
-
-                    st.session_state.active_call_index = effective_active
-                    target_idx = saved_idx if (saved_idx > 0 or effective_active == 0) else effective_active
-                    st.session_state.queue_index = target_idx
-                    if target_idx > 0 and target_idx < len(spoc_numbers):
-                        st.session_state.show_resume_banner = True
-                    else:
-                        st.session_state.show_resume_banner = False
-                    
-                    if spoc_numbers:
-                        resume_idx = target_idx if target_idx < len(spoc_numbers) else 0
-                        load_student_by_phone(spoc_numbers[resume_idx])
-                        
-                    st.rerun()
+                if selected_call_type in ["Enrollment", "Retention"]:
+                    st.error(f"The {selected_call_type} Call Module is not yet available. Please select Placement or Impact Assessment.")
                 else:
-                    st.error("Invalid Username or Password.")
+                    auth_recs = fetch_auth_data()
+                    match = next((r for r in auth_recs if str(r.get("spoc_name")).strip().lower() == u.strip().lower()), None)
+                    if match and match.get("password") == hash_password(p):
+                        st.session_state.logged_in = True
+                        st.session_state.user = u.strip()
+                        st.session_state.call_type = selected_call_type
+
+                        if selected_call_type == "Placement":
+                            all_plc_rows = fetch_placement_master_data(sheets.get("placement"))
+                            plc_students = get_placement_students_for_spoc(all_plc_rows, u)
+                            st.session_state.allocated_numbers = [s["contact_number"] for s in plc_students]
+                            saved_q, saved_act = get_saved_placement_index(u, plc_students)
+                            st.session_state.placement_queue_index = saved_q
+                            st.session_state.placement_active_call_index = saved_act
+                        else:
+                            alloc_data = fetch_allocation_data()
+                            spoc_numbers = [
+                                str(r.get("phone_number")).strip() for r in alloc_data 
+                                if str(r.get("SPOC_Name")).strip().lower() == u.strip().lower() and r.get("phone_number")
+                            ]
+                            st.session_state.allocated_numbers = spoc_numbers
+                            
+                            saved_idx, saved_active = get_spoc_saved_index(u, spoc_numbers)
+                            highest_verified = get_spoc_highest_verified_index(u, spoc_numbers)
+                            if highest_verified >= 0 and (highest_verified + 1) < len(spoc_numbers):
+                                effective_active = max(saved_active, highest_verified + 1)
+                            else:
+                                effective_active = saved_active
+
+                            st.session_state.active_call_index = effective_active
+                            target_idx = saved_idx if (saved_idx > 0 or effective_active == 0) else effective_active
+                            st.session_state.queue_index = target_idx
+                            if target_idx > 0 and target_idx < len(spoc_numbers):
+                                st.session_state.show_resume_banner = True
+                            else:
+                                st.session_state.show_resume_banner = False
+                            
+                            if spoc_numbers:
+                                resume_idx = target_idx if target_idx < len(spoc_numbers) else 0
+                                load_student_by_phone(spoc_numbers[resume_idx])
+                            
+                        st.rerun()
+                    else:
+                        st.error("Invalid Username or Password.")
         with tab_reg:
             nu = st.text_input("New SPOC Name", key="reg_user")
             np = st.text_input("New Password", type="password", key="reg_pass")
@@ -1211,6 +1259,48 @@ if not st.session_state.logged_in:
 # 🏠 MAIN OPERATIONAL DASHBOARD
 # ==============================================================================
 else:
+    ADMIN_USERS = {"nibedan", "pritam", "kalpana", "koushik"}
+    is_admin = st.session_state.user.strip().lower() in ADMIN_USERS
+
+    # --------------------------------------------------------------------------
+    # 💼 MODULE ROUTING: PLACEMENT vs IMPACT ASSESSMENT
+    # --------------------------------------------------------------------------
+    if st.session_state.get("call_type") == "Placement":
+        # Sidebar Project Switcher & User Profile
+        st.sidebar.markdown(f"### 👤 Logged In: **{st.session_state.user}**")
+        sb_proj = st.sidebar.selectbox(
+            "🔄 Switch Call Type",
+            ["Placement", "Impact Assessment"],
+            index=0,
+            key="sb_call_type_switcher_plc"
+        )
+        if sb_proj != "Placement":
+            st.session_state.call_type = sb_proj
+            alloc_data = fetch_allocation_data()
+            spoc_numbers = [
+                str(r.get("phone_number")).strip() for r in alloc_data 
+                if str(r.get("SPOC_Name")).strip().lower() == st.session_state.user.strip().lower() and r.get("phone_number")
+            ]
+            st.session_state.allocated_numbers = spoc_numbers
+            saved_idx, saved_active = get_spoc_saved_index(st.session_state.user, spoc_numbers)
+            st.session_state.queue_index = saved_idx
+            if spoc_numbers:
+                load_student_by_phone(spoc_numbers[saved_idx if saved_idx < len(spoc_numbers) else 0])
+            st.rerun()
+
+        if st.sidebar.button("🔴 Logout", use_container_width=True, key="sb_plc_logout_btn"):
+            st.session_state.logged_in = False
+            st.session_state.user = ""
+            st.session_state.allocated_numbers = []
+            st.rerun()
+
+        # Render complete high speed placement verification dashboard
+        render_placement_dashboard(sheets.get("placement"), st.session_state.user, is_admin=is_admin)
+        st.stop()
+
+    # ==========================================================================
+    # 🏠 EXISTING IMPACT ASSESSMENT DASHBOARD
+    # ==========================================================================
     all_master_rows = fetch_master_data()
     master_headers = all_master_rows[0] if (all_master_rows and len(all_master_rows) > 0) else EXPECTED_HEADERS
     current_spoc_clean = st.session_state.user.strip().lower()
@@ -1241,13 +1331,19 @@ else:
     else:
         spoc_contactable_pct = 0.0
 
-    # Admin roles check & performance scope (defined early so sidebar & boards both have access)
-    ADMIN_USERS = {"nibedan", "pritam", "kalpana", "koushik"}
-    is_admin = st.session_state.user.strip().lower() in ADMIN_USERS
     selected_perf_view = st.session_state.get("perf_view_selector_box", "🌟 All Team Combined (Portal Total)")
 
     # Sidebar
     st.sidebar.markdown(f"### 👤 Logged In: **{st.session_state.user}**")
+    sb_proj_ia = st.sidebar.selectbox(
+        "🔄 Switch Call Type",
+        ["Impact Assessment", "Placement"],
+        index=0,
+        key="sb_call_type_switcher_ia"
+    )
+    if sb_proj_ia != "Impact Assessment":
+        st.session_state.call_type = sb_proj_ia
+        st.rerun()
     st.sidebar.markdown("---")
     
     if total_assigned > 0:
