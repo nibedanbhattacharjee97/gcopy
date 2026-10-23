@@ -283,7 +283,6 @@ def get_placement_students_for_spoc(all_rows, spoc_name):
     
     # Filter to current SPOC
     spoc_students = [s for s in all_students if s["called_by"].strip().lower() == spoc_clean]
-    # Re-index queue_index
     for i, s in enumerate(spoc_students):
         s["queue_index"] = i
     return spoc_students
@@ -459,12 +458,12 @@ def render_placement_not_contactable_list(fresh_stats, current_spoc):
                 st.rerun()
 
 # ==============================================================================
-# 🤖 AI PARSING & COPILOT SUITE
+# 🤖 ZERO-API LOCAL AI PARSING & COPILOT SUITE (100% OFFLINE, FREE, NO API KEY)
 # ==============================================================================
 def ai_parse_call_notes(raw_notes: str, student_info: dict) -> dict:
     """
-    Intelligent NLP extractor that parses unstructured caller notes/transcripts
-    and maps them to structured verification fields.
+    Intelligent Local NLP extractor (0ms latency, zero external API key needed).
+    Parses unstructured caller notes/transcripts and maps them to structured verification fields.
     """
     if not raw_notes or not raw_notes.strip():
         return {}
@@ -564,7 +563,7 @@ def ai_parse_call_notes(raw_notes: str, student_info: dict) -> dict:
             val = str(int(float(val.replace("k", "")) * 1000))
         extracted["salary"] = val
     else:
-        if extracted.get("retention_status") == "Working in same job":
+        if extracted.get("retention_status") in ["Working in same job", "Left_The_Job"]:
             extracted["salary"] = str(student_info.get("salary", ""))
 
     # Extract NPS rating (e.g. "nps 10", "rated 9", "10/10")
@@ -589,14 +588,13 @@ def ai_parse_call_notes(raw_notes: str, student_info: dict) -> dict:
     return extracted
 
 def generate_ai_calling_script(student: dict, lang: str = "English") -> dict:
-    """Generates a dynamic multi-lingual calling script personalized for the student"""
+    """Generates a dynamic multi-lingual calling script personalized for the student (No API key needed)"""
     s_name = student.get("student_name", "Student")
     company = student.get("company_name", "your placed company")
     desig = student.get("designation", "Intern")
     salary = student.get("salary", "10000")
     donor = student.get("donor_name", "Anudip")
     centre = student.get("centre_name", "Anudip Centre")
-    state = student.get("state", "Telangana")
 
     if lang == "Telugu":
         greeting = f"నమస్కారం {s_name} గారూ! నేను అనుదీప్ ఫౌండేషన్ ({donor} ప్రోగ్రామ్, {centre}) నుండి మాట్లాడుతున్నాను. మీతో 1 నిమిషం మాట్లాడవచ్చా?"
@@ -638,7 +636,7 @@ def generate_ai_calling_script(student: dict, lang: str = "English") -> dict:
     }
 
 def compute_retention_risk_score(student: dict) -> dict:
-    """Computes an AI Career & Retention Stability Score based on profile factors"""
+    """Computes an AI Career & Retention Stability Score based on profile factors (Local Rule-based)"""
     salary_str = re.sub(r"\D", "", str(student.get("salary", "0")))
     salary = int(salary_str) if salary_str else 10000
 
@@ -748,32 +746,6 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                 color: #1e293b;
                 text-align: center;
             }
-            .question-pill-body {
-                background: #ffffff;
-                border: 1.5px solid #e2e8f0;
-                border-top: none;
-                border-radius: 0 0 8px 8px;
-                padding: 10px 14px;
-                margin-bottom: 10px;
-            }
-            .speed-preset-chip {
-                display: inline-block;
-                background: #f1f5f9;
-                border: 1px solid #cbd5e1;
-                border-radius: 20px;
-                padding: 5px 12px;
-                font-size: 0.82rem;
-                font-weight: 700;
-                color: #334155;
-                cursor: pointer;
-                transition: all 0.15s ease;
-                margin-right: 6px;
-                margin-bottom: 6px;
-            }
-            .speed-preset-chip:hover {
-                background: #e2e8f0;
-                color: #0f172a;
-            }
             .ai-copilot-box {
                 background: linear-gradient(135deg, #f8fafc 0%, #eff6ff 100%);
                 border: 1.5px solid #bfdbfe;
@@ -833,7 +805,6 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
     with col_view_lbl:
         st.markdown("<div style='padding-top: 6px; font-weight: 800; color: #0f4c81; font-size: 1.05rem;'>📊 Select Performance View:</div>", unsafe_allow_html=True)
     with col_view_sel:
-        # Default index: 0 for admin, or the current SPOC if not admin
         default_v_idx = 0
         if not is_admin and current_spoc.title() in view_options:
             default_v_idx = view_options.index(current_spoc.title())
@@ -927,8 +898,7 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
 
     st.markdown("<div style='margin-bottom: 14px;'></div>", unsafe_allow_html=True)
 
-    # Queue active student determination:
-    # If admin chooses a specific SPOC from dropdown, queue follows that SPOC, otherwise uses caller's students
+    # Queue active student determination
     if is_admin and selected_perf_view != "🌟 All Team Combined (Portal Total)":
         active_queue_students = scoped_students
     else:
@@ -983,7 +953,6 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
     # 4. 🧹 Clear Form Button
     if c_clear.button("🧹 Clear Form", use_container_width=True):
         row_k = current_student["row_num"]
-        # Clear any active presets or session overrides for this student row
         st.session_state.pop(f"plc_preset_{row_k}", None)
         keys_to_remove = [k for k in st.session_state.keys() if f"_{row_k}" in k and k.startswith("plc_")]
         for k in keys_to_remove:
@@ -998,24 +967,138 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
         st.toast("Database cache refreshed from Google Sheets!", icon="🔄")
         st.rerun()
 
-    # Calling Target Banner
+    # ==========================================================================
+    # 🎯 CALLING TARGET BANNER WITH 1-CLICK COPY PHONE NUMBER (EXACT PICTURE MATCH)
+    # ==========================================================================
     prog_pct = min((current_q_idx + 1) / total_assigned_queue, 1.0) if total_assigned_queue > 0 else 0
     st.progress(prog_pct)
 
-    col_t1, col_t2 = st.columns([4, 1.2])
+    col_t1, col_t2 = st.columns([5, 1.1])
+    phone_clean = clean_phone(current_student['contact_number'])
+
     with col_t1:
-        st.markdown(f"""
-            <div style="background: linear-gradient(135deg, #e8f0fe 0%, #f0f7ff 100%); padding: 0.65rem 1.1rem; border-radius: 8px; border-left: 5px solid #1a73e8; color: #1e3a8a; font-weight: 700; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
-                <div>
-                    🎯 Calling Target <b>#{current_q_idx + 1}</b> of <b>{total_assigned_queue}</b> &nbsp;·&nbsp;
-                    <span style="color: #0f172a; font-size: 1.05rem;">{current_student['student_name']}</span> &nbsp;·&nbsp;
-                    <a href="tel:{current_student['contact_number']}" style="color: #1a73e8; text-decoration: underline; font-weight: 800;">📞 {current_student['contact_number']}</a>
-                </div>
-                <div>
-                    <span style="background: #ffffff; border: 1px solid #bfdbfe; color: #1e40af; padding: 2px 8px; border-radius: 12px; font-size: 0.8rem;">Row #{current_student['row_num']}</span>
-                </div>
+        # High-Speed HTML Component with exact Green Outlined "Copy Phone Number" button & instant clipboard JS
+        components.html(f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+        <style>
+            * {{ box-sizing: border-box; }}
+            body {{
+                margin: 0;
+                padding: 0;
+                background: transparent;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            }}
+            .queue-banner {{
+                background: linear-gradient(135deg, #e8f0fe 0%, #f0f7ff 100%);
+                padding: 8px 16px;
+                border-radius: 8px;
+                border-left: 5px solid #1a73e8;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                height: 48px;
+            }}
+            .banner-left {{
+                font-size: 1.0rem;
+                color: #1e3a8a;
+                font-weight: 700;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }}
+            .phone-link {{
+                color: #1a73e8;
+                font-weight: 800;
+                font-size: 1.08rem;
+                text-decoration: underline;
+            }}
+            .copy-banner-btn {{
+                border: 1.5px solid #2e7d32;
+                background-color: #ffffff;
+                color: #1b5e20;
+                font-weight: 700;
+                font-size: 0.90rem;
+                border-radius: 6px;
+                padding: 5px 14px;
+                cursor: pointer;
+                transition: all 0.2s ease-in-out;
+                display: inline-flex;
+                align-items: center;
+                gap: 5px;
+                white-space: nowrap;
+            }}
+            .copy-banner-btn:hover {{
+                background-color: #f0fdf4;
+                border-color: #15803d;
+                color: #14532d;
+                transform: translateY(-1px);
+            }}
+            .copy-banner-btn.copied {{
+                background-color: #16a34a !important;
+                color: #ffffff !important;
+                border-color: #15803d !important;
+            }}
+        </style>
+        </head>
+        <body>
+        <div class="queue-banner">
+            <div class="banner-left">
+                <span>🎯 Calling Target <b>#{current_q_idx + 1} of {total_assigned_queue}</b></span>
+                <span>·</span>
+                <span style="color: #0f172a;">{current_student['student_name']}</span>
+                <span>·</span>
+                <a href="tel:{phone_clean}" class="phone-link">📞 {phone_clean}</a>
             </div>
-        """, unsafe_allow_html=True)
+            <div>
+                <button id="copyBtn" class="copy-banner-btn" onclick="copyNumber()">📋 Copy Phone Number</button>
+            </div>
+        </div>
+        <script>
+        function copyNumber() {{
+            const num = "{phone_clean}";
+            if (navigator.clipboard && window.isSecureContext) {{
+                navigator.clipboard.writeText(num).then(showSuccess, fallbackCopy);
+            }} else {{
+                fallbackCopy();
+            }}
+            function showSuccess() {{
+                const btn = document.getElementById("copyBtn");
+                btn.innerHTML = "✅ Copied!";
+                btn.className = "copy-banner-btn copied";
+                setTimeout(() => {{
+                    btn.innerHTML = "📋 Copy Phone Number";
+                    btn.className = "copy-banner-btn";
+                }}, 2000);
+            }}
+            function fallbackCopy() {{
+                const ta = document.createElement("textarea");
+                ta.value = num;
+                ta.style.position = "fixed";
+                ta.style.top = "0";
+                ta.style.left = "0";
+                ta.style.opacity = "0";
+                document.body.appendChild(ta);
+                ta.focus();
+                ta.select();
+                try {{
+                    document.execCommand("copy");
+                    showSuccess();
+                }} catch (e) {{
+                    console.error("Copy failed", e);
+                }}
+                document.body.removeChild(ta);
+            }}
+        }}
+        </script>
+        </body>
+        </html>
+        """, height=52)
+
     with col_t2:
         if st.button("⏭️ Skip", use_container_width=True, key=f"plc_skip_btn_{current_student['row_num']}"):
             st.session_state.placement_queue_index = min(total_assigned_queue - 1, current_q_idx + 1)
@@ -1069,11 +1152,18 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
     st.markdown('</div>', unsafe_allow_html=True)
 
     # ==========================================================================
-    # ⚡ HIGH SPEED VERIFICATION & AI COPILOT SUITE
+    # ⚡ HIGH SPEED VERIFICATION & AI COPILOT SUITE (100% LOCAL, NO API KEY REQUIRED)
     # ==========================================================================
     ai_risk = compute_retention_risk_score(current_student)
 
-    with st.expander("🤖 AI Calling Copilot & 1-Click Fast Presets (Click to Expand)", expanded=False):
+    with st.expander("🤖 Local AI Calling Copilot & 1-Click Fast Presets (Click to Expand)", expanded=False):
+        # Clear reassurance that zero external API keys are required
+        st.markdown("""
+            <div style="background: #f0fdf4; border: 1.5px solid #86efac; border-left: 5px solid #16a34a; padding: 7px 12px; border-radius: 6px; margin-bottom: 10px; font-size: 0.85rem; color: #166534; font-weight: 700;">
+                ⚡ 100% Free Built-in Local AI: No API Key or Internet Needed. Runs locally on your machine with ZERO latency and zero cost.
+            </div>
+        """, unsafe_allow_html=True)
+
         c_ai1, c_ai2 = st.columns([1.8, 1.2])
         with c_ai1:
             st.markdown(f"""
@@ -1098,30 +1188,29 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                     <p style="margin: 0 0 8px 0; font-size: 0.92rem; color: #334155;"><i>"{script_data['training_check']}"</i></p>
                     <p style="margin: 0 0 6px 0; color: #1e3a8a; font-weight: 700;">4. Satisfaction & NPS:</p>
                     <p style="margin: 0 0 8px 0; font-size: 0.92rem; color: #334155;"><i>"{script_data['feedback']}"</i></p>
-                    <p style="margin: 0 0 6px 0; color: #1e3a8a; font-weight: 700;">5. Polite Wrap-up:</p>
                     <p style="margin: 0; font-size: 0.92rem; color: #334155;"><i>"{script_data['closing']}"</i></p>
                 </div>
             """, unsafe_allow_html=True)
 
         with c_ai2:
-            st.markdown("<b style='color: #0f4c81; font-size: 0.95rem;'>🧠 AI Smart Notes Parser</b>", unsafe_allow_html=True)
-            st.caption("Paste rough notes or transcribe call here to auto-fill form:")
+            st.markdown("<b style='color: #0f4c81; font-size: 0.95rem;'>🧠 Local AI Notes Parser</b>", unsafe_allow_html=True)
+            st.caption("Paste notes to auto-fill form (No API key needed):")
             ai_notes_inp = st.text_area(
                 "Call Notes",
                 placeholder="E.g. Spoke with Swetha. Working in same job at Engro as Intern. Salary 10000. Got cert and gave assessment. NPS 10. Satisfied.",
-                height=110,
+                height=100,
                 key=f"plc_ai_note_inp_{current_student['row_num']}"
             )
             if st.button("✨ Auto-Fill Form from Call Notes", use_container_width=True, key=f"plc_ai_extract_btn_{current_student['row_num']}"):
                 if ai_notes_inp.strip():
                     parsed_res = ai_parse_call_notes(ai_notes_inp, current_student)
                     st.session_state[f"plc_preset_{current_student['row_num']}"] = parsed_res
-                    st.toast(f"AI extracted {len(parsed_res)} fields from notes!", icon="✨")
+                    st.toast(f"Local AI extracted {len(parsed_res)} fields from notes!", icon="✨")
                     st.rerun()
                 else:
                     st.warning("Please type or paste call notes first.")
 
-            st.markdown("<hr style='margin: 10px 0;'>", unsafe_allow_html=True)
+            st.markdown("<hr style='margin: 8px 0;'>", unsafe_allow_html=True)
             st.markdown("<b style='color: #0f4c81; font-size: 0.9rem;'>⚡ 1-Click Speed Presets:</b>", unsafe_allow_html=True)
 
             c_p1, c_p2 = st.columns(2)
@@ -1202,7 +1291,6 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
         </div>
     """, unsafe_allow_html=True)
 
-    # Check for active preset or initial values
     row_preset = st.session_state.get(f"plc_preset_{current_student['row_num']}", {})
 
     # 1. Question 1: Is the student Contactable? (Call Status)
@@ -1297,13 +1385,11 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                     placement_ws.update(values=[payload], range_name=f"Q{current_student['row_num']}:AG{current_student['row_num']}")
                     fetch_placement_master_data.clear()
 
-                    # Live buffer update
                     st.session_state.placement_live_history.insert(0, (current_student['row_num'], list(payload)))
                     st.session_state.placement_live_history = st.session_state.placement_live_history[:20]
 
                     st.toast(f"Saved Target #{current_q_idx + 1} ({current_student['student_name']}) as Not Contactable!", icon="✅")
 
-                    # Advance queue
                     if current_q_idx + 1 < total_assigned_queue:
                         st.session_state.placement_queue_index = current_q_idx + 1
                         next_s = active_queue_students[current_q_idx + 1]
@@ -1384,16 +1470,23 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
         )
 
         # ======================================================================
-        # CASCADING SECTION BASED ON RETENTION STATUS (PICTURE 4)
+        # CASCADING SECTION BASED ON RETENTION STATUS & USER SPECIFICATION
         # ======================================================================
+        # User Rule 1: Working in Same Job OR Left The Job -> Company, Salary, Desig, DOJ Auto Fill-Up!
+        # User Rule 2: Working in Different Job -> All fields open & need to be updated!
+        # User Rule 3: Will joined after some days -> SPOC can also upload/enter company name & details!
 
-        # Case 1: Working in same job / Working in different job
-        is_working = f_retention in ["Working in same job", "Working in different job"]
+        has_company_details = f_retention in [
+            "Working in same job",
+            "Working in different job",
+            "Left_The_Job",
+            "Will joined after some days"
+        ]
 
-        if is_working:
+        if f_retention == "Working in same job":
             st.markdown("""
-                <div style="background: #f0fdf4; border: 1px solid #bbf7d0; padding: 10px 14px; border-radius: 8px; margin: 10px 0; color: #166534; font-size: 0.92rem; font-weight: 700;">
-                    💼 Currently Employed — Confirm Working Details:
+                <div style="background: #f0fdf4; border: 1.5px solid #86efac; border-left: 5px solid #16a34a; padding: 10px 14px; border-radius: 8px; margin: 10px 0; color: #166534; font-size: 0.92rem; font-weight: 700;">
+                    💼 Working in Same Job: Company details auto-filled from Placement Profile (Editable if needed):
                 </div>
             """, unsafe_allow_html=True)
 
@@ -1411,34 +1504,38 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                 )
 
             with c_emp2:
-                def_comp = row_preset.get("company", current_student["current_company"] or (current_student["company_name"] if f_retention == "Working in same job" else ""))
+                # AUTO-FILLED from placed company
+                def_comp = row_preset.get("company", current_student["company_name"])
                 f_company = st.text_input(
-                    "7. Current Company Name",
+                    "7. Current Company Name (Auto-filled)",
                     value=def_comp,
                     key=f"plc_txt_comp_{current_student['row_num']}"
                 )
 
             with c_emp3:
-                def_sal = row_preset.get("salary", current_student["current_salary"] or (current_student["salary"] if f_retention == "Working in same job" else ""))
+                # AUTO-FILLED from placed salary
+                def_sal = row_preset.get("salary", current_student["salary"])
                 f_salary = st.text_input(
-                    "8. Current Salary (Per Month)",
+                    "8. Current Salary / Month (Auto-filled)",
                     value=str(def_sal),
                     key=f"plc_txt_sal_{current_student['row_num']}"
                 )
 
             c_emp4, c_emp5, c_emp6 = st.columns(3)
             with c_emp4:
-                def_desig = row_preset.get("designation", current_student["current_designation"] or (current_student["designation"] if f_retention == "Working in same job" else ""))
+                # AUTO-FILLED from placed designation
+                def_desig = row_preset.get("designation", current_student["designation"])
                 f_designation = st.text_input(
-                    "9. Current Designation",
+                    "9. Current Designation (Auto-filled)",
                     value=def_desig,
                     key=f"plc_txt_desig_{current_student['row_num']}"
                 )
 
             with c_emp5:
-                def_doj = row_preset.get("doj", parse_date_safe(current_student["current_doj"]) or parse_date_safe(current_student["doj"]) or date.today())
+                # AUTO-FILLED from placed DOJ
+                def_doj = row_preset.get("doj", parse_date_safe(current_student["doj"]) or date.today())
                 f_doj = st.date_input(
-                    "10. DOJ (Current Job)",
+                    "10. DOJ (Current Job - Auto-filled)",
                     value=def_doj,
                     key=f"plc_date_doj_{current_student['row_num']}"
                 )
@@ -1457,17 +1554,227 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
             f_left_remarks = "N/A - Currently Working"
             f_not_joined_remarks = "N/A"
 
-        else:
-            # Not working variables initialized
-            f_months = ""
-            f_company = ""
-            f_salary = ""
-            f_designation = ""
-            f_doj = ""
-            f_further_job = "NO"
+        elif f_retention == "Left_The_Job":
+            # AUTO-FILL placed company details for Left_The_Job per user requirement!
+            st.markdown("""
+                <div style="background: #fef2f2; border: 1.5px solid #fecaca; border-left: 5px solid #ef4444; padding: 10px 14px; border-radius: 8px; margin: 10px 0; color: #991b1b; font-size: 0.92rem; font-weight: 700;">
+                    🚪 Left The Job: Placed company details auto-filled below. Please select the reason for leaving (Picture 4 Col 5):
+                </div>
+            """, unsafe_allow_html=True)
 
-        # Case 2: Not_working_at_all (Picture 4 Col 1 & Col 3, Col 4)
-        if f_retention == "Not_working_at_all":
+            c_lj1, c_lj2, c_lj3 = st.columns(3)
+            with c_lj1:
+                # AUTO-FILLED placed company
+                def_comp = row_preset.get("company", current_student["company_name"])
+                f_company = st.text_input(
+                    "Placed Company Left (Auto-filled)",
+                    value=def_comp,
+                    key=f"plc_txt_comp_{current_student['row_num']}"
+                )
+            with c_lj2:
+                # AUTO-FILLED placed salary
+                def_sal = row_preset.get("salary", current_student["salary"])
+                f_salary = st.text_input(
+                    "Last Salary / Month (Auto-filled)",
+                    value=str(def_sal),
+                    key=f"plc_txt_sal_{current_student['row_num']}"
+                )
+            with c_lj3:
+                # AUTO-FILLED placed designation
+                def_desig = row_preset.get("designation", current_student["designation"])
+                f_designation = st.text_input(
+                    "Designation Left (Auto-filled)",
+                    value=def_desig,
+                    key=f"plc_txt_desig_{current_student['row_num']}"
+                )
+
+            c_lj4, c_lj5 = st.columns(2)
+            with c_lj4:
+                # AUTO-FILLED placed DOJ
+                def_doj = row_preset.get("doj", parse_date_safe(current_student["doj"]) or date.today())
+                f_doj = st.date_input(
+                    "Date of Joining (DOJ - Auto-filled)",
+                    value=def_doj,
+                    key=f"plc_date_doj_{current_student['row_num']}"
+                )
+            with c_lj5:
+                def_further_val = row_preset.get("need_further_job", current_student["need_further_job"]).upper()
+                def_further_idx = 0 if def_further_val == "YES" else 1
+                f_further_job = st.radio(
+                    "Need Another Job Assistance?",
+                    ["YES", "NO"],
+                    index=def_further_idx,
+                    horizontal=True,
+                    key=f"plc_rad_further_{current_student['row_num']}"
+                )
+
+            # Left The Job Reason dropdown (Image 4 Column 5)
+            existing_left = row_preset.get("left_remarks", current_student["left_not_working_remarks"].strip())
+            def_left_idx = 0
+            if existing_left in PLACEMENT_LEFT_JOB_OPTIONS:
+                def_left_idx = PLACEMENT_LEFT_JOB_OPTIONS.index(existing_left)
+
+            f_left_remarks = st.selectbox(
+                "12. Left The Job Reason (Picture 4 Col 5)",
+                PLACEMENT_LEFT_JOB_OPTIONS,
+                index=def_left_idx,
+                key=f"plc_sel_left_rem_{current_student['row_num']}"
+            )
+            f_months = ""
+            f_not_joined_remarks = "N/A"
+
+        elif f_retention == "Working in different job":
+            # Working in different job -> All fields open & need to be updated!
+            st.markdown("""
+                <div style="background: #eff6ff; border: 1.5px solid #bfdbfe; border-left: 5px solid #2563eb; padding: 10px 14px; border-radius: 8px; margin: 10px 0; color: #1e40af; font-size: 0.92rem; font-weight: 700;">
+                    🔄 Working in Different Job: Please update all new company details, designation, and salary below:
+                </div>
+            """, unsafe_allow_html=True)
+
+            c_emp1, c_emp2, c_emp3 = st.columns(3)
+            with c_emp1:
+                def_months_idx = 0
+                existing_m = row_preset.get("months", current_student["how_many_months"])
+                if existing_m in PLACEMENT_MONTHS_OPTIONS:
+                    def_months_idx = PLACEMENT_MONTHS_OPTIONS.index(existing_m)
+                f_months = st.selectbox(
+                    "6. How Many Months in New Job?",
+                    PLACEMENT_MONTHS_OPTIONS,
+                    index=def_months_idx,
+                    key=f"plc_sel_months_{current_student['row_num']}"
+                )
+
+            with c_emp2:
+                # Open / Blank for new company entry
+                saved_comp = current_student["current_company"] if current_student["current_company"] != current_student["company_name"] else ""
+                def_comp = row_preset.get("company", saved_comp)
+                f_company = st.text_input(
+                    "7. New Company Name (Enter Updates)",
+                    value=def_comp,
+                    placeholder="Enter new employer name...",
+                    key=f"plc_txt_comp_{current_student['row_num']}"
+                )
+
+            with c_emp3:
+                # Open / Blank for new salary entry
+                saved_sal = current_student["current_salary"] if current_student["current_salary"] != current_student["salary"] else ""
+                def_sal = row_preset.get("salary", saved_sal)
+                f_salary = st.text_input(
+                    "8. New Salary / Month (Enter Updates)",
+                    value=str(def_sal),
+                    placeholder="E.g. 15000",
+                    key=f"plc_txt_sal_{current_student['row_num']}"
+                )
+
+            c_emp4, c_emp5, c_emp6 = st.columns(3)
+            with c_emp4:
+                # Open / Blank for new designation entry
+                saved_desig = current_student["current_designation"] if current_student["current_designation"] != current_student["designation"] else ""
+                def_desig = row_preset.get("designation", saved_desig)
+                f_designation = st.text_input(
+                    "9. New Designation (Enter Updates)",
+                    value=def_desig,
+                    placeholder="E.g. Associate / Executive",
+                    key=f"plc_txt_desig_{current_student['row_num']}"
+                )
+
+            with c_emp5:
+                def_doj = row_preset.get("doj", parse_date_safe(current_student["current_doj"]) or date.today())
+                f_doj = st.date_input(
+                    "10. DOJ (New Job)",
+                    value=def_doj,
+                    key=f"plc_date_doj_{current_student['row_num']}"
+                )
+
+            with c_emp6:
+                def_further_val = row_preset.get("need_further_job", current_student["need_further_job"]).upper()
+                def_further_idx = 1 if def_further_val != "YES" else 0
+                f_further_job = st.radio(
+                    "11. Need Any Further Job?",
+                    ["YES", "NO"],
+                    index=def_further_idx,
+                    horizontal=True,
+                    key=f"plc_rad_further_{current_student['row_num']}"
+                )
+
+            f_left_remarks = "N/A - Working in different job"
+            f_not_joined_remarks = "N/A"
+
+        elif f_retention == "Will joined after some days":
+            # Will joined after some days -> SPOC Can Also Upload/Enter the Company Name & Details!
+            st.markdown("""
+                <div style="background: #fdf4ff; border: 1.5px solid #f0abfc; border-left: 5px solid #c026d3; padding: 10px 14px; border-radius: 8px; margin: 10px 0; color: #86198f; font-size: 0.92rem; font-weight: 700;">
+                    📅 Will Join Upcoming Job: Enter or confirm joining company and onboarding details below:
+                </div>
+            """, unsafe_allow_html=True)
+
+            c_wj1, c_wj2, c_wj3 = st.columns(3)
+            with c_wj1:
+                # Defaulted to placed company, or editable if joining another company
+                def_comp = row_preset.get("company", current_student["current_company"] or current_student["company_name"])
+                f_company = st.text_input(
+                    "Joining Company Name",
+                    value=def_comp,
+                    placeholder="Enter joining company...",
+                    key=f"plc_txt_comp_{current_student['row_num']}"
+                )
+
+            with c_wj2:
+                def_sal = row_preset.get("salary", current_student["current_salary"] or current_student["salary"])
+                f_salary = st.text_input(
+                    "Offered Salary / Month",
+                    value=str(def_sal),
+                    placeholder="E.g. 12000",
+                    key=f"plc_txt_sal_{current_student['row_num']}"
+                )
+
+            with c_wj3:
+                def_desig = row_preset.get("designation", current_student["current_designation"] or current_student["designation"])
+                f_designation = st.text_input(
+                    "Offered Designation",
+                    value=def_desig,
+                    placeholder="E.g. Trainee / Executive",
+                    key=f"plc_txt_desig_{current_student['row_num']}"
+                )
+
+            c_wj4, c_wj5, c_wj6 = st.columns(3)
+            with c_wj4:
+                def_doj = row_preset.get("doj", parse_date_safe(current_student["current_doj"]) or date.today())
+                f_doj = st.date_input(
+                    "Expected Date of Joining (DOJ)",
+                    value=def_doj,
+                    key=f"plc_date_doj_{current_student['row_num']}"
+                )
+
+            with c_wj5:
+                existing_left = row_preset.get("left_remarks", current_student["left_not_working_remarks"].strip())
+                def_wj_idx = 0
+                if existing_left in PLACEMENT_WILL_JOIN_OPTIONS:
+                    def_wj_idx = PLACEMENT_WILL_JOIN_OPTIONS.index(existing_left)
+
+                f_left_remarks = st.selectbox(
+                    "Joining Status / Reason",
+                    PLACEMENT_WILL_JOIN_OPTIONS,
+                    index=def_wj_idx,
+                    key=f"plc_sel_wj_rem_{current_student['row_num']}"
+                )
+
+            with c_wj6:
+                def_further_val = row_preset.get("need_further_job", current_student["need_further_job"]).upper()
+                def_further_idx = 1 if def_further_val != "YES" else 0
+                f_further_job = st.radio(
+                    "Need Any Further Job?",
+                    ["YES", "NO"],
+                    index=def_further_idx,
+                    horizontal=True,
+                    key=f"plc_rad_further_{current_student['row_num']}"
+                )
+
+            f_months = ""
+            f_not_joined_remarks = "N/A"
+
+        elif f_retention == "Not_working_at_all":
+            # Not working at all (Picture 4 Col 1 & Col 3, Col 4)
             st.markdown("""
                 <div style="background: #fff7ed; border: 1px solid #fed7aa; padding: 10px 14px; border-radius: 8px; margin: 10px 0; color: #9a3412; font-size: 0.92rem; font-weight: 700;">
                     ⚠️ Student Not Working At All — Select Reasons from Picture 4:
@@ -1512,47 +1819,23 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                     key=f"plc_sel_sub_rem_{current_student['row_num']}"
                 )
 
-        # Case 3: Left_The_Job (Picture 4 Col 5)
-        elif f_retention == "Left_The_Job":
-            st.markdown("""
-                <div style="background: #fef2f2; border: 1px solid #fecaca; padding: 10px 14px; border-radius: 8px; margin: 10px 0; color: #991b1b; font-size: 0.92rem; font-weight: 700;">
-                    🚪 Student Left The Job — Select Reason from Picture 4 Col 5:
-                </div>
-            """, unsafe_allow_html=True)
+            f_company = ""
+            f_salary = ""
+            f_designation = ""
+            f_doj = ""
+            f_months = ""
+            f_further_job = "NO"
 
-            existing_left = row_preset.get("left_remarks", current_student["left_not_working_remarks"].strip())
-            def_left_idx = 0
-            if existing_left in PLACEMENT_LEFT_JOB_OPTIONS:
-                def_left_idx = PLACEMENT_LEFT_JOB_OPTIONS.index(existing_left)
-
-            f_left_remarks = st.selectbox(
-                "12. Left The Job Reason (Picture 4 Col 5)",
-                PLACEMENT_LEFT_JOB_OPTIONS,
-                index=def_left_idx,
-                key=f"plc_sel_left_rem_{current_student['row_num']}"
-            )
-            f_not_joined_remarks = "N/A"
-
-        # Case 4: Confirmed Name But Didn't Share Any Information
-        elif f_retention == "Confirmed Name But Didn't Share Any Information.":
+        else: # Confirmed Name But Didn't Share Any Information.
+            st.info("ℹ️ Student confirmed name but declined to disclose current employment or salary.")
             f_left_remarks = "Confirmed Name But Didn't Share Any Information."
             f_not_joined_remarks = "N/A"
-            st.info("ℹ️ Student confirmed name but declined to disclose current employment or salary.")
-
-        # Case 5: Will joined after some days
-        elif f_retention == "Will joined after some days":
-            existing_left = row_preset.get("left_remarks", current_student["left_not_working_remarks"].strip())
-            def_wj_idx = 0
-            if existing_left in PLACEMENT_WILL_JOIN_OPTIONS:
-                def_wj_idx = PLACEMENT_WILL_JOIN_OPTIONS.index(existing_left)
-
-            f_left_remarks = st.selectbox(
-                "12. Joining Status / Reason",
-                PLACEMENT_WILL_JOIN_OPTIONS,
-                index=def_wj_idx,
-                key=f"plc_sel_wj_rem_{current_student['row_num']}"
-            )
-            f_not_joined_remarks = "N/A"
+            f_company = ""
+            f_salary = ""
+            f_designation = ""
+            f_doj = ""
+            f_months = ""
+            f_further_job = "NO"
 
         st.markdown("<hr style='margin: 16px 0;'>", unsafe_allow_html=True)
         st.markdown("<div style='font-weight: 700; color: #0f4c81; font-size: 1.02rem; margin-bottom: 8px;'>⭐ Feedback, NPS & SPOC Notes</div>", unsafe_allow_html=True)
@@ -1601,36 +1884,34 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
         if st.button("💾 Submit Placement Verification", type="primary", use_container_width=True, key=f"plc_btn_submit_{current_student['row_num']}"):
             with st.spinner("⚡ High Speed Sync to Google Sheets..."):
                 payload = [
-                    "Yes",                                    # Q: Contactable
-                    f_assessment,                             # R: Assessment Given
-                    f_certificate,                            # S: Got Certificate
-                    f_got_job,                                # T: Have_You_Got_This_Job_From_Anudip
-                    f_retention,                              # U: Retention Status
-                    f_months if is_working else "",           # V: How Many Months Working
-                    f_company if is_working else "",          # W: Current Company Name
-                    str(f_salary) if is_working else "",      # X: Current Salary
-                    f_designation if is_working else "",      # Y: Current Designation
-                    str(f_doj) if is_working else "",         # Z: DOJ
-                    f_further_job if is_working else "NO",    # AA: Need any further job
-                    str(f_nps),                               # AB: Net Promoter Score
-                    str(f_vdate),                             # AC: Verification Date
-                    f_left_remarks,                           # AD: Left The Job /Not Working/Not - Contactable Remarks
-                    f_not_joined_remarks,                     # AE: Not Joined Remarks
-                    f_satisfied,                              # AF: Satisfied With Conversation
-                    f_remarks_2.strip()                       # AG: Remarks 2
+                    "Yes",                                                      # Q: Contactable
+                    f_assessment,                                               # R: Assessment Given
+                    f_certificate,                                              # S: Got Certificate
+                    f_got_job,                                                  # T: Have_You_Got_This_Job_From_Anudip
+                    f_retention,                                                # U: Retention Status
+                    f_months if f_retention in ["Working in same job", "Working in different job"] else "",  # V: How Many Months Working
+                    f_company if has_company_details else "",                   # W: Current Company Name
+                    str(f_salary) if has_company_details else "",               # X: Current Salary
+                    f_designation if has_company_details else "",               # Y: Current Designation
+                    str(f_doj) if has_company_details else "",                  # Z: DOJ
+                    f_further_job if has_company_details else "NO",             # AA: Need any further job
+                    str(f_nps),                                                 # AB: Net Promoter Score
+                    str(f_vdate),                                               # AC: Verification Date
+                    f_left_remarks,                                             # AD: Left The Job /Not Working/Not - Contactable Remarks
+                    f_not_joined_remarks,                                       # AE: Not Joined Remarks
+                    f_satisfied,                                                # AF: Satisfied With Conversation
+                    f_remarks_2.strip()                                         # AG: Remarks 2
                 ]
 
                 try:
                     placement_ws.update(values=[payload], range_name=f"Q{current_student['row_num']}:AG{current_student['row_num']}")
                     fetch_placement_master_data.clear()
 
-                    # 0ms live history update
                     st.session_state.placement_live_history.insert(0, (current_student['row_num'], list(payload)))
                     st.session_state.placement_live_history = st.session_state.placement_live_history[:20]
 
                     st.toast(f"✅ Target #{current_q_idx + 1} ({current_student['student_name']}) saved successfully to Google Sheets!", icon="🎯")
 
-                    # Advance queue
                     if current_q_idx + 1 < total_assigned_queue:
                         st.session_state.placement_queue_index = current_q_idx + 1
                         next_s = active_queue_students[current_q_idx + 1]
@@ -1682,7 +1963,6 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                 "remarks": s["left_not_working_remarks"]
             })
 
-    # Show latest 5 in reverse order (Z to A)
     latest_5 = list(reversed(called_records))[:5]
     if not latest_5:
         st.info("No verified calls completed yet in this session.")
