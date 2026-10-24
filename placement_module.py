@@ -647,6 +647,11 @@ def ai_parse_call_notes(raw_notes: str, student_info: dict) -> dict:
     else:
         extracted["need_further_job"] = "NO"
 
+    # Months working extraction (e.g. "3 months", "worked 6 months", "left after 2 months")
+    m_match = re.search(r"\b(\d{1,2}\s*(?:months?|mths?|mon))\b", text, re.IGNORECASE)
+    if m_match:
+        extracted["months"] = m_match.group(1).title()
+
     return extracted
 
 def generate_ai_calling_script(student: dict, lang: str = "English") -> dict:
@@ -1094,7 +1099,7 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                         "got_certificate": normalize_tri_val(found_target["got_certificate"], "YES"),
                         "got_job_from_anudip": normalize_tri_val(found_target["got_job_from_anudip"], "YES"),
                         "retention_status": found_target["retention_status"] or "Working in same job",
-                        "months": found_target["how_many_months"] or "3 Months",
+                        "months": found_target["how_many_months"] or ("3 Months" if found_target.get("retention_status") in ["Working in same job", "Working in different job"] else ""),
                         "company": found_target["current_company"] or found_target["company_name"],
                         "salary": found_target["current_salary"] or found_target["salary"],
                         "designation": found_target["current_designation"] or found_target["designation"],
@@ -1749,42 +1754,54 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
         elif f_retention == "Left_The_Job":
             st.markdown("""
                 <div style="background: #fef2f2; border: 1.5px solid #fecaca; border-left: 5px solid #ef4444; padding: 10px 14px; border-radius: 8px; margin: 10px 0; color: #991b1b; font-size: 0.92rem; font-weight: 700;">
-                    🚪 Left The Job: Placed company details auto-filled below. Please select the reason for leaving (Picture 4 Col 5):
+                    🚪 Left The Job: Placed company details auto-filled below. <span style="background: #ef4444; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.82rem; margin-left: 6px;">MANDATORY</span> <b>'How Many Months Working' must be filled to submit.</b>
                 </div>
             """, unsafe_allow_html=True)
 
             c_lj1, c_lj2, c_lj3 = st.columns(3)
             with c_lj1:
+                def_months = row_preset.get("months", current_student["how_many_months"]).strip()
+                f_months = st.text_input(
+                    "6. How Many Months Working * (Mandatory)",
+                    value=def_months,
+                    placeholder="Type months worked (e.g. 3 Months, 6 Months)...",
+                    key=f"plc_txt_months_{current_student['row_num']}",
+                    help="Mandatory: You must type how many months the student worked before leaving."
+                )
+                if not f_months.strip():
+                    st.markdown("<small style='color: #dc2626; font-weight: 700;'>🚨 Mandatory: Must type something to submit!</small>", unsafe_allow_html=True)
+
+            with c_lj2:
                 def_comp = row_preset.get("company", current_student["current_company"] or current_student["company_name"])
                 f_company = st.text_input(
-                    "Placed Company Left (Auto-filled)",
+                    "7. Placed Company Left (Auto-filled)",
                     value=def_comp,
                     key=f"plc_txt_comp_{current_student['row_num']}"
                 )
-            with c_lj2:
+            with c_lj3:
                 def_sal = row_preset.get("salary", current_student["current_salary"] or current_student["salary"])
                 f_salary = st.text_input(
-                    "Last Salary / Month (Auto-filled)",
+                    "8. Last Salary / Month (Auto-filled)",
                     value=str(def_sal),
                     key=f"plc_txt_sal_{current_student['row_num']}"
                 )
-            with c_lj3:
+
+            c_lj4, c_lj5, c_lj6 = st.columns(3)
+            with c_lj4:
                 def_desig = row_preset.get("designation", current_student["current_designation"] or current_student["designation"])
                 f_designation = st.text_input(
-                    "Designation Left (Auto-filled)",
+                    "9. Designation Left (Auto-filled)",
                     value=def_desig,
                     key=f"plc_txt_desig_{current_student['row_num']}"
                 )
-
-            c_lj4, c_lj5 = st.columns(2)
-            with c_lj4:
+            with c_lj5:
                 def_doj = row_preset.get("doj", parse_date_safe(current_student["current_doj"]) or parse_date_safe(current_student["doj"]) or date.today())
                 f_doj = st.date_input(
-                    "Date of Joining (DOJ - Auto-filled)",
+                    "10. Date of Joining (DOJ - Auto-filled)",
                     value=def_doj,
                     key=f"plc_date_doj_{current_student['row_num']}"
                 )
-            with c_lj5:
+            with c_lj6:
                 def_further_val = row_preset.get("need_further_job", current_student["need_further_job"])
                 def_further_idx = get_tri_option_index(def_further_val, default="YES")
                 f_further_job = st.radio(
@@ -1806,7 +1823,6 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                 index=def_left_idx,
                 key=f"plc_sel_left_rem_{current_student['row_num']}"
             )
-            f_months = ""
             f_not_joined_remarks = "N/A"
 
         elif f_retention == "Working in different job":
@@ -2081,46 +2097,50 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
         st.markdown("<br>", unsafe_allow_html=True)
         btn_submit_label = f"💾 Update & Insert Placement Verification (Row #{current_student['row_num']})" if (is_edit_mode or is_already_verified) else "💾 Submit Placement Verification"
         if st.button(btn_submit_label, type="primary", use_container_width=True, key=f"plc_btn_submit_{current_student['row_num']}"):
-            with st.spinner("⚡ High Speed Sync to Google Sheets..."):
-                payload = [
-                    "Yes",                                                      # Q: Contactable
-                    f_assessment,                                               # R: Assessment Given
-                    f_certificate,                                              # S: Got Certificate
-                    f_got_job,                                                  # T: Have_You_Got_This_Job_From_Anudip
-                    f_retention,                                                # U: Retention Status
-                    f_months if f_retention in ["Working in same job", "Working in different job"] else "",  # V: How Many Months Working
-                    f_company if has_company_details else "",                   # W: Current Company Name
-                    str(f_salary) if has_company_details else "",               # X: Current Salary
-                    f_designation if has_company_details else "",               # Y: Current Designation
-                    str(f_doj) if has_company_details else "",                  # Z: DOJ
-                    f_further_job,                                              # AA: Need any further job
-                    str(f_nps),                                                 # AB: Net Promoter Score
-                    str(f_vdate),                                               # AC: Verification Date
-                    f_left_remarks,                                             # AD: Left The Job /Not Working/Not - Contactable Remarks
-                    f_not_joined_remarks,                                       # AE: Not Joined Remarks
-                    f_satisfied,                                                # AF: Satisfied With Conversation
-                    f_remarks_2.strip()                                         # AG: Remarks 2
-                ]
+            is_retention_left = str(f_retention).strip().lower().replace("_", " ") == "left the job"
+            if is_retention_left and not str(f_months).strip():
+                st.error("🚨 **Submission Blocked:** **'How Many Months Working' is mandatory** when Retention Status is **'Left The Job'**! You must type something in this field before submitting.")
+            else:
+                with st.spinner("⚡ High Speed Sync to Google Sheets..."):
+                    payload = [
+                        "Yes",                                                      # Q: Contactable
+                        f_assessment,                                               # R: Assessment Given
+                        f_certificate,                                              # S: Got Certificate
+                        f_got_job,                                                  # T: Have_You_Got_This_Job_From_Anudip
+                        f_retention,                                                # U: Retention Status
+                        str(f_months).strip() if (f_retention in ["Working in same job", "Working in different job"] or is_retention_left) else "",  # V: How Many Months Working
+                        f_company if has_company_details else "",                   # W: Current Company Name
+                        str(f_salary) if has_company_details else "",               # X: Current Salary
+                        f_designation if has_company_details else "",               # Y: Current Designation
+                        str(f_doj) if has_company_details else "",                  # Z: DOJ
+                        f_further_job,                                              # AA: Need any further job
+                        str(f_nps),                                                 # AB: Net Promoter Score
+                        str(f_vdate),                                               # AC: Verification Date
+                        f_left_remarks,                                             # AD: Left The Job /Not Working/Not - Contactable Remarks
+                        f_not_joined_remarks,                                       # AE: Not Joined Remarks
+                        f_satisfied,                                                # AF: Satisfied With Conversation
+                        f_remarks_2.strip()                                         # AG: Remarks 2
+                    ]
 
-                try:
-                    placement_ws.update(values=[payload], range_name=f"Q{current_student['row_num']}:AG{current_student['row_num']}")
-                    fetch_placement_master_data.clear()
+                    try:
+                        placement_ws.update(values=[payload], range_name=f"Q{current_student['row_num']}:AG{current_student['row_num']}")
+                        fetch_placement_master_data.clear()
 
-                    st.session_state.placement_live_history.insert(0, (current_student['row_num'], list(payload)))
-                    st.session_state.placement_live_history = st.session_state.placement_live_history[:20]
-                    st.session_state.pop("placement_editing_row", None)
+                        st.session_state.placement_live_history.insert(0, (current_student['row_num'], list(payload)))
+                        st.session_state.placement_live_history = st.session_state.placement_live_history[:20]
+                        st.session_state.pop("placement_editing_row", None)
 
-                    st.toast(f"✅ Target #{current_q_idx + 1} ({current_student['student_name']}) updated and inserted successfully in Google Sheets!", icon="🎯")
+                        st.toast(f"✅ Target #{current_q_idx + 1} ({current_student['student_name']}) updated and inserted successfully in Google Sheets!", icon="🎯")
 
-                    if current_q_idx + 1 < total_assigned_queue:
-                        st.session_state.placement_queue_index = current_q_idx + 1
-                        next_s = active_queue_students[current_q_idx + 1]
-                        save_placement_progress(current_spoc, current_q_idx + 1, next_s["contact_number"], active_call_index=st.session_state.get("placement_active_call_index", 0))
+                        if current_q_idx + 1 < total_assigned_queue:
+                            st.session_state.placement_queue_index = current_q_idx + 1
+                            next_s = active_queue_students[current_q_idx + 1]
+                            save_placement_progress(current_spoc, current_q_idx + 1, next_s["contact_number"], active_call_index=st.session_state.get("placement_active_call_index", 0))
 
-                    time.sleep(0.3)
-                    st.rerun()
-                except Exception as ex:
-                    st.error(f"Error saving to Google Sheets: {ex}")
+                        time.sleep(0.3)
+                        st.rerun()
+                    except Exception as ex:
+                        st.error(f"Error saving to Google Sheets: {ex}")
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -2236,7 +2256,7 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                         "got_certificate": normalize_tri_val(it.get("got_certificate"), "YES"),
                         "got_job_from_anudip": normalize_tri_val(it.get("got_job_from_anudip"), "YES"),
                         "retention_status": it["retention"] or "Working in same job",
-                        "months": it.get("months", "3 Months"),
+                        "months": it.get("months", "") or ("3 Months" if it.get("retention") in ["Working in same job", "Working in different job"] else ""),
                         "company": it.get("current_company") or it["company_name"],
                         "salary": it.get("current_salary") or it["student_obj"].get("salary", ""),
                         "designation": it.get("current_designation") or it["student_obj"].get("designation", ""),
