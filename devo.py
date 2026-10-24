@@ -309,7 +309,9 @@ else:
              disp_deg = st.session_state.form_initials["deg"]
              disp_doj = st.session_state.form_initials["doj"]
 
-        f_months = st.number_input("Months Working", min_value=0)
+        is_left = str(f_retention).strip().lower().replace("_", " ") == "left the job"
+        lbl_months = "How Many Months Working * (Mandatory)" if is_left else "Months Working"
+        f_months = st.number_input(lbl_months, min_value=0)
         f_comp = st.text_input("Company", value=disp_comp)
         f_sal = st.text_input("Salary", value=disp_sal)
         f_deg = st.text_input("DEG", value=disp_deg)
@@ -326,7 +328,12 @@ else:
 
     # SUBMIT
     if st.button("🚀 SUBMIT VERIFICATION", use_container_width=True):
-        if f_name and f_cmis:
+        is_left_sub = str(f_retention).strip().lower().replace("_", " ") == "left the job"
+        if not (f_name and f_cmis):
+            st.warning("Name and CMIS ID are mandatory fields!")
+        elif is_left_sub and (f_months is None or f_months <= 0):
+            st.error("🚨 'How Many Months Working' is mandatory when Retention Status is 'Left The Job'! Please enter the number of months before submitting.")
+        else:
             with st.spinner("Saving current record and shifting queue..."):
                 try:
                     payload = [
@@ -351,6 +358,6 @@ else:
                     time.sleep(0.5)
                     st.rerun()
                 except Exception as e: st.error(f"Error handling save operations: {e}")
-        else: st.warning("Name and CMIS ID are mandatory fields!")
+
 
 st.markdown('<div class="footer">© 2026 Anudip Foundation | High Speed Verification System v4.0</div>', unsafe_allow_html=True)
