@@ -2255,6 +2255,7 @@ else:
     init_vdate = date.today()
 
     with f_sub1:
+        st.session_state[f"inp_vdate_{ver}"] = date.today()
         f_vdate = st.date_input("Verification Date", value=init_vdate, disabled=True, key=f"inp_vdate_{ver}")
     with f_sub2:
         f_spoc_notes = st.text_input("SPOC Notes / Calling Remarks", value=init.get("spoc_notes", ""), placeholder="Any additional notes or observations...", key=f"inp_notes_{ver}")
