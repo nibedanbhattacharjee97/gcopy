@@ -6,6 +6,8 @@ import os
 import re
 import time
 import urllib.parse
+import csv
+import io
 
 PROGRESS_PLACEMENT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "spoc_placement_progress.json")
 DATA_CACHE_TTL = 900  # 15 minutes TTL for zero API rate limit and lightning speed
@@ -513,6 +515,210 @@ def render_placement_not_contactable_list(fresh_stats, current_spoc):
                 st.rerun()
 
 # ==============================================================================
+# 📥 RESPECTIVE SPOC DATA EXPORT & SIDEBAR DOWNLOAD COMPONENT (PICTURE 2)
+# ==============================================================================
+def build_placement_csv(students_subset, live_history=None, headers=None):
+    """
+    Builds a complete UTF-8 with BOM CSV containing all 33 Placement columns.
+    Overlays real-time live session updates so newly verified calls appear immediately.
+    """
+    if live_history is None:
+        live_history = []
+
+    live_map = {}
+    for item in live_history:
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            live_map[item[0]] = item[1]
+
+    if not headers or len(headers) < 33:
+        headers = [
+            "SPOC Name", "Student Name", "CMIS ID", "Donor Name", "Contact Number",
+            "Alt Contact Number", "Gender", "Centre Code", "Centre Name", "State",
+            "Course", "DOJ", "Company Name", "Designation", "Salary", "Job Location",
+            "Contactable", "Assessment Given", "Got Certificate", "Have You Got This Job From Anudip",
+            "Retention Status", "How Many Months Working", "Current Company Name", "Current Salary",
+            "Current Designation", "Current DOJ", "Need any further job", "Net Promoter Score",
+            "Verification Date", "Left / Not Working Remarks", "Not Joined Remarks",
+            "Satisfied With Conversation", "Remarks 2"
+        ]
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(headers)
+
+    for s in students_subset:
+        r_num = s.get("row_num")
+        lp = live_map.get(r_num)
+
+        contactable = lp[0] if lp and len(lp) > 0 else s.get("contactable", "")
+        assessment = lp[1] if lp and len(lp) > 1 else s.get("assessment_given", "")
+        certificate = lp[2] if lp and len(lp) > 2 else s.get("got_certificate", "")
+        got_job = lp[3] if lp and len(lp) > 3 else s.get("got_job_from_anudip", "")
+        retention = lp[4] if lp and len(lp) > 4 else s.get("retention_status", "")
+        months = lp[5] if lp and len(lp) > 5 else s.get("how_many_months", "")
+        curr_co = lp[6] if lp and len(lp) > 6 else s.get("current_company", "")
+        curr_sal = lp[7] if lp and len(lp) > 7 else s.get("current_salary", "")
+        curr_desig = lp[8] if lp and len(lp) > 8 else s.get("current_designation", "")
+        curr_doj = lp[9] if lp and len(lp) > 9 else s.get("current_doj", "")
+        need_job = lp[10] if lp and len(lp) > 10 else s.get("need_further_job", "")
+        nps = lp[11] if lp and len(lp) > 11 else s.get("nps", "")
+        vdate = lp[12] if lp and len(lp) > 12 else s.get("verification_date", "")
+        left_rem = lp[13] if lp and len(lp) > 13 else s.get("left_not_working_remarks", "")
+        not_joined_rem = lp[14] if lp and len(lp) > 14 else s.get("not_joined_remarks", "")
+        satisfied = lp[15] if lp and len(lp) > 15 else s.get("satisfied_with_conversation", "")
+        rem2 = lp[16] if lp and len(lp) > 16 else s.get("remarks_2", "")
+
+        row = [
+            s.get("called_by", ""),
+            s.get("student_name", ""),
+            s.get("cmis_id", ""),
+            s.get("donor_name", ""),
+            s.get("contact_number", ""),
+            s.get("alt_contact_number", ""),
+            s.get("gender", ""),
+            s.get("centre_code", ""),
+            s.get("centre_name", ""),
+            s.get("state", ""),
+            s.get("course", ""),
+            s.get("doj", ""),
+            s.get("company_name", ""),
+            s.get("designation", ""),
+            s.get("salary", ""),
+            s.get("job_location", ""),
+            contactable,
+            assessment,
+            certificate,
+            got_job,
+            retention,
+            months,
+            curr_co,
+            curr_sal,
+            curr_desig,
+            curr_doj,
+            need_job,
+            nps,
+            vdate,
+            left_rem,
+            not_joined_rem,
+            satisfied,
+            rem2
+        ]
+        writer.writerow(row)
+
+    return "\ufeff" + output.getvalue()
+
+def render_placement_sidebar_download(all_placement_students, current_spoc, is_admin=False, live_history=None, all_rows=None):
+    """
+    Renders the dedicated SPOC Data Download section in the sidebar directly beneath Logout,
+    exactly as requested in Picture 2. Allows SPOCs to download Yes, No, and Total data.
+    """
+    if live_history is None:
+        live_history = []
+
+    live_map = {}
+    for item in live_history:
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            live_map[item[0]] = item[1]
+
+    all_spocs = sorted(list({s["called_by"].strip().title() for s in all_placement_students if s.get("called_by")}))
+
+    target_spoc = current_spoc.strip()
+    if is_admin:
+        admin_spoc_options = [current_spoc.title(), "🌟 All Team Combined"] + [sp for sp in all_spocs if sp.lower() != current_spoc.strip().lower()]
+        target_choice = st.sidebar.selectbox(
+            "📥 Target SPOC Download Scope",
+            admin_spoc_options,
+            index=0,
+            key="sb_plc_dl_target_spoc"
+        )
+        if target_choice == "🌟 All Team Combined":
+            target_spoc = "ALL"
+            display_spoc_label = "All Team Combined"
+        else:
+            target_spoc = target_choice
+            display_spoc_label = target_choice
+    else:
+        display_spoc_label = current_spoc.title()
+
+    if target_spoc == "ALL":
+        spoc_records = all_placement_students
+    else:
+        spoc_records = [s for s in all_placement_students if s["called_by"].strip().lower() == target_spoc.strip().lower()]
+
+    yes_students = []
+    no_students = []
+    for s in spoc_records:
+        r_num = s["row_num"]
+        lp = live_map.get(r_num)
+        cont = lp[0].strip().lower() if (lp and len(lp) > 0) else s.get("contactable", "").strip().lower()
+        if cont == "yes":
+            yes_students.append(s)
+        elif cont == "no":
+            no_students.append(s)
+
+    total_students = spoc_records
+    yes_cnt = len(yes_students)
+    no_cnt = len(no_students)
+    total_cnt = len(total_students)
+
+    sheet_headers = None
+    if all_rows and len(all_rows) > 0 and len(all_rows[0]) >= 33:
+        sheet_headers = [str(h).strip() for h in all_rows[0][:33]]
+
+    # Styled container matching the green outline drawn in Picture 2
+    st.sidebar.markdown(f"""
+        <div style="background: #ffffff; border: 2.2px solid #22c55e; border-radius: 10px; padding: 12px 14px; margin-top: 10px; margin-bottom: 12px; box-shadow: 0 2px 10px rgba(34, 197, 94, 0.15);">
+            <div style="font-weight: 800; color: #15803d; font-size: 0.96rem; text-align: center; text-transform: uppercase; letter-spacing: 0.5px;">
+                📥 Data Download
+            </div>
+            <div style="font-size: 0.85rem; color: #1e293b; font-weight: 700; text-align: center; margin-top: 3px; margin-bottom: 8px;">
+                For ({display_spoc_label})
+            </div>
+            <div style="display: flex; justify-content: space-around; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; padding: 6px 4px; font-size: 0.78rem; font-weight: 700;">
+                <span style="color: #15803d;">✅ Yes: {yes_cnt}</span>
+                <span style="color: #b91c1c;">❌ No: {no_cnt}</span>
+                <span style="color: #1e40af;">📊 Total: {total_cnt}</span>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    safe_name = re.sub(r'[^\w\-_\.]', '_', display_spoc_label)
+    now_str = datetime.now().strftime('%Y%m%d_%H%M')
+
+    # Yes Data Download Button
+    yes_csv = build_placement_csv(yes_students, live_history, headers=sheet_headers)
+    st.sidebar.download_button(
+        label=f"📥 Download 'Yes' Data ({yes_cnt})",
+        data=yes_csv,
+        file_name=f"Placement_Yes_Data_{safe_name}_{now_str}.csv",
+        mime="text/csv",
+        use_container_width=True,
+        key=f"sb_dl_plc_yes_{safe_name}"
+    )
+
+    # No Data Download Button
+    no_csv = build_placement_csv(no_students, live_history, headers=sheet_headers)
+    st.sidebar.download_button(
+        label=f"📥 Download 'No' Data ({no_cnt})",
+        data=no_csv,
+        file_name=f"Placement_No_Data_{safe_name}_{now_str}.csv",
+        mime="text/csv",
+        use_container_width=True,
+        key=f"sb_dl_plc_no_{safe_name}"
+    )
+
+    # Total Data Download Button
+    total_csv = build_placement_csv(total_students, live_history, headers=sheet_headers)
+    st.sidebar.download_button(
+        label=f"📥 Download 'Total' Data ({total_cnt})",
+        data=total_csv,
+        file_name=f"Placement_Total_Data_{safe_name}_{now_str}.csv",
+        mime="text/csv",
+        use_container_width=True,
+        key=f"sb_dl_plc_total_{safe_name}"
+    )
+
+# ==============================================================================
 # 🤖 ZERO-API LOCAL AI PARSING & COPILOT SUITE (100% OFFLINE, FREE, NO API KEY)
 # ==============================================================================
 def ai_parse_call_notes(raw_notes: str, student_info: dict) -> dict:
@@ -842,6 +1048,15 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
     # All distinct SPOCs from sheet
     all_spocs = sorted(list({s["called_by"].strip().title() for s in all_placement_students if s["called_by"]}))
 
+    # Render Respective SPOC Data Download in Sidebar (Picture 2 requirement)
+    render_placement_sidebar_download(
+        all_placement_students=all_placement_students,
+        current_spoc=current_spoc,
+        is_admin=is_admin,
+        live_history=st.session_state.placement_live_history,
+        all_rows=all_rows
+    )
+
     # Top Brand Header Banner
     st.markdown("""
         <div style="background: linear-gradient(135deg, #1e3a8a 0%, #0f4c81 100%); padding: 1.2rem 1.6rem; border-radius: 12px; color: white; margin-bottom: 1.2rem; box-shadow: 0 4px 14px rgba(15, 76, 129, 0.2);">
@@ -1107,7 +1322,7 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                         "need_further_job": normalize_tri_val(found_target["need_further_job"], "NO"),
                         "nps": found_target["nps"] or "10",
                         "satisfied": found_target["satisfied_with_conversation"] or "Yes",
-                        "verification_date": parse_date_safe(found_target["verification_date"]) or date.today(),
+                        "verification_date": date.today(),
                         "left_remarks": found_target["left_not_working_remarks"],
                         "not_joined_remarks": found_target["not_joined_remarks"],
                         "nocont_reason": found_target["left_not_working_remarks"],
@@ -1435,9 +1650,11 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
 
         with c_no2:
             st.markdown('<div class="question-pill-header">Verification Date</div>', unsafe_allow_html=True)
+            st.session_state[f"plc_date_no_{current_student['row_num']}"] = date.today()
             f_vdate_no = st.date_input(
                 "Verification Date",
-                value=parse_date_safe(row_preset.get("verification_date", current_student["verification_date"])) or date.today(),
+                value=date.today(),
+                disabled=True,
                 label_visibility="collapsed",
                 key=f"plc_date_no_{current_student['row_num']}"
             )
@@ -1467,7 +1684,7 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                     "",                           # Z: DOJ
                     "",                           # AA: Need any further job
                     "",                           # AB: Net Promoter Score
-                    str(f_vdate_no),              # AC: Verification Date
+                    str(date.today()),            # AC: Verification Date
                     f_nocont_reason,              # AD: Left The Job /Not Working/Not - Contactable Remarks
                     "N/A",                        # AE: Not Joined Remarks
                     "",                           # AF: Satisfied With Conversation
@@ -1965,9 +2182,11 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
             )
 
         with c_fb3:
+            st.session_state[f"plc_date_vdate_{current_student['row_num']}"] = date.today()
             f_vdate = st.date_input(
                 "16. Verification Date",
-                value=parse_date_safe(row_preset.get("verification_date", current_student["verification_date"])) or date.today(),
+                value=date.today(),
+                disabled=True,
                 key=f"plc_date_vdate_{current_student['row_num']}"
             )
 
@@ -2000,7 +2219,7 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                         str(f_doj) if has_company_details else "",                  # Z: DOJ
                         f_further_job,                                              # AA: Need any further job
                         str(f_nps),                                                 # AB: Net Promoter Score
-                        str(f_vdate),                                               # AC: Verification Date
+                        str(date.today()),                                          # AC: Verification Date
                         f_left_remarks,                                             # AD: Left The Job /Not Working/Not - Contactable Remarks
                         f_not_joined_remarks,                                       # AE: Not Joined Remarks
                         f_satisfied,                                                # AF: Satisfied With Conversation
@@ -2149,7 +2368,7 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                         "need_further_job": normalize_tri_val(it.get("need_further_job"), "NO"),
                         "nps": str(it.get("nps", "10")),
                         "satisfied": it.get("satisfied", "Yes"),
-                        "verification_date": parse_date_safe(it.get("verification_date")) or date.today(),
+                        "verification_date": date.today(),
                         "left_remarks": it["remarks"],
                         "not_joined_remarks": it.get("not_joined_remarks", "N/A"),
                         "nocont_reason": it["remarks"] if str(it["contactable"]).lower() == "no" else "",
