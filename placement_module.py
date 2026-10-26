@@ -8,6 +8,12 @@ import time
 import urllib.parse
 import csv
 import io
+import warnings
+
+# Suppress Streamlit deprecation warnings for clean console logs (resolves Picture 3 issue)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", message=".*st\\.components\\.v1\\.html.*")
+warnings.filterwarnings("ignore", message=".*st\\.iframe.*")
 
 PROGRESS_PLACEMENT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "spoc_placement_progress.json")
 DATA_CACHE_TTL = 900  # 15 minutes TTL for zero API rate limit and lightning speed

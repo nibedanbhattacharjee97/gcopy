@@ -10,11 +10,24 @@ import json
 import os
 import re
 import time
+import warnings
+
+# Suppress Streamlit deprecation warnings for clean console logs (resolves Picture 3 issue)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", message=".*st\\.components\\.v1\\.html.*")
+warnings.filterwarnings("ignore", message=".*st\\.iframe.*")
+
 from placement_module import (
     render_placement_dashboard,
     fetch_placement_master_data,
     get_placement_students_for_spoc,
     get_saved_placement_index
+)
+from enrollment_module import (
+    render_enrollment_dashboard,
+    fetch_enrollment_master_data,
+    get_enrollment_students_for_spoc,
+    get_saved_enrollment_index
 )
 
 # ==============================================================================
@@ -268,32 +281,63 @@ EXPECTED_HEADERS = [
 
 @st.cache_resource
 def get_sheets_connection():
-    scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-    creds = load_credentials(scope)
-    gc = gspread.authorize(creds)
-    
-    # Open required sheets for Impact Assessment
-    master_ws = gc.open("Test").sheet1
-    auth_ws = gc.open("Test_Spoc_PassWord").sheet1
-    lookup_ws = gc.open("Test2").sheet1
-    alloc_ws = gc.open("Test3").sheet1
-
-    # Open dedicated Placement Verification Sheet (Never uses test/test1/test2/test3/test4)
+    master_ws = None
+    auth_ws = None
+    lookup_ws = None
+    alloc_ws = None
     placement_ws = None
+    enrollment_ws = None
     try:
-        placement_sh = gc.open_by_key("1lNVa5ELW7GR7vg3iPAedO5Ysy9UjcJM7l0-2vyDR5J8")
-        placement_ws = placement_sh.worksheet("Placement_Verification")
-    except Exception:
+        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        creds = load_credentials(scope)
+        gc = gspread.authorize(creds)
+        
+        # Open required sheets for Impact Assessment
+        try: master_ws = gc.open("Test").sheet1
+        except Exception: master_ws = None
+        try: auth_ws = gc.open("Test_Spoc_PassWord").sheet1
+        except Exception: auth_ws = None
+        try: lookup_ws = gc.open("Test2").sheet1
+        except Exception: lookup_ws = None
+        try: alloc_ws = gc.open("Test3").sheet1
+        except Exception: alloc_ws = None
+
+        # Open dedicated Placement Verification Sheet (Never uses test/test1/test2/test3/test4)
         try:
-            placement_ws = gc.open("Placement_Verification").sheet1
+            placement_sh = gc.open_by_key("1lNVa5ELW7GR7vg3iPAedO5Ysy9UjcJM7l0-2vyDR5J8")
+            placement_ws = placement_sh.worksheet("Placement_Verification")
         except Exception:
-            placement_ws = None
-    
-    # Synchronize Test headers if needed
-    try:
-        current_headers = master_ws.row_values(1)
-        if not current_headers or current_headers[:5] != EXPECTED_HEADERS[:5] or len(current_headers) < 20 or "Retention Status" in current_headers:
-            master_ws.update(values=[EXPECTED_HEADERS], range_name=f"A1:Z1")
+            try:
+                placement_ws = gc.open("Placement_Verification").sheet1
+            except Exception:
+                placement_ws = None
+
+        # Open dedicated Enrollment Verification Sheet
+        try:
+            enrollment_sh = gc.open_by_key("1lNVa5ELW7GR7vg3iPAedO5Ysy9UjcJM7l0-2vyDR5J8")
+            for ws_name in ["enrollment_Verification", "Enrollment_Verification", "enrollment_verification"]:
+                try:
+                    enrollment_ws = enrollment_sh.worksheet(ws_name)
+                    break
+                except Exception:
+                    pass
+        except Exception:
+            try:
+                enrollment_ws = gc.open("enrollment_Verification").sheet1
+            except Exception:
+                try:
+                    enrollment_ws = gc.open("Enrollment_Verification").sheet1
+                except Exception:
+                    enrollment_ws = None
+        
+        # Synchronize Test headers if needed
+        if master_ws:
+            try:
+                current_headers = master_ws.row_values(1)
+                if not current_headers or current_headers[:5] != EXPECTED_HEADERS[:5] or len(current_headers) < 20 or "Retention Status" in current_headers:
+                    master_ws.update(values=[EXPECTED_HEADERS], range_name=f"A1:Z1")
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -302,7 +346,8 @@ def get_sheets_connection():
         "auth": auth_ws,
         "lookup": lookup_ws,
         "allocation": alloc_ws,
-        "placement": placement_ws
+        "placement": placement_ws,
+        "enrollment": enrollment_ws
     }
 
 sheets = get_sheets_connection()
@@ -317,30 +362,66 @@ DATA_CACHE_TTL = 900
 @st.cache_data(ttl=DATA_CACHE_TTL)
 def fetch_all_lookup_data():
     """Fetches and indexes all 7,400+ student records from Test2 for instant O(1) lookup (15 min cache)"""
-    records = sheets["lookup"].get_all_records()
-    phone_map = {}
-    for r in records:
-        raw_phone = str(r.get("Contact Number", "")).strip()
-        cleaned = clean_phone(raw_phone)
-        if cleaned and cleaned not in phone_map:
-            phone_map[cleaned] = r
-    return records, phone_map
+    try:
+        if sheets.get("lookup"):
+            records = sheets["lookup"].get_all_records()
+            phone_map = {}
+            for r in records:
+                raw_phone = str(r.get("Contact Number", "")).strip()
+                cleaned = clean_phone(raw_phone)
+                if cleaned and cleaned not in phone_map:
+                    phone_map[cleaned] = r
+            return records, phone_map
+    except Exception:
+        pass
+    return [], {}
 
 @st.cache_data(ttl=DATA_CACHE_TTL)
 def fetch_auth_data():
-    return sheets["auth"].get_all_records()
+    if sheets.get("auth"):
+        try:
+            return sheets["auth"].get_all_records()
+        except Exception:
+            pass
+    # Fallback to local pass.txt
+    pass_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pass.txt")
+    if os.path.exists(pass_file):
+        try:
+            recs = []
+            with open(pass_file, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f, delimiter="\t")
+                for r in reader:
+                    spoc = r.get("spoc_name", "").strip()
+                    pwd = r.get("password", "").strip()
+                    if spoc and pwd:
+                        recs.append({
+                            "spoc_name": spoc,
+                            "password": hash_password(pwd),
+                            "created_date": r.get("created_date", "").strip()
+                        })
+            return recs
+        except Exception:
+            pass
+    return []
 
 @st.cache_data(ttl=DATA_CACHE_TTL)
 def fetch_allocation_data():
-    return sheets["allocation"].get_all_records()
+    try:
+        if sheets.get("allocation"):
+            return sheets["allocation"].get_all_records()
+    except Exception:
+        pass
+    return []
 
 @st.cache_data(ttl=DATA_CACHE_TTL)
 def fetch_master_data():
     """Fetches all rows from Test verification sheet to check for existing submissions (15 min cache)"""
     try:
-        return sheets["master"].get_all_values()
+        if sheets.get("master"):
+            return sheets["master"].get_all_values()
     except Exception:
-        return []
+        pass
+    return []
 
 def find_master_record_by_phone(phone_target):
     """Finds existing record in Test sheet by phone number. Returns (row_data, 1_indexed_row_number) or (None, None)"""
@@ -1178,7 +1259,7 @@ if not st.session_state.logged_in:
         """, unsafe_allow_html=True)
 
         # Call Type Selector BEFORE Login
-        call_type_options = ["Placement", "Impact Assessment", "Enrollment", "Retention"]
+        call_type_options = ["Placement", "Enrollment", "Impact Assessment", "Retention"]
         def_ct_idx = call_type_options.index(st.session_state.get("call_type", "Placement")) if st.session_state.get("call_type") in call_type_options else 0
         selected_call_type = st.selectbox(
             "Select Call Type",
@@ -1189,16 +1270,16 @@ if not st.session_state.logged_in:
         )
         st.session_state.call_type = selected_call_type
 
-        if selected_call_type in ["Enrollment", "Retention"]:
-            st.info(f"ℹ️ **{selected_call_type} Call Module** is scheduled for upcoming rollout. Please select **Placement** or **Impact Assessment** to proceed.")
+        if selected_call_type in ["Retention"]:
+            st.info(f"ℹ️ **{selected_call_type} Call Module** is scheduled for upcoming rollout. Please select **Placement**, **Enrollment** or **Impact Assessment** to proceed.")
 
         tab_log, tab_reg = st.tabs(["🔐 Login", "🆕 Register"])
         with tab_log:
             u = st.text_input("SPOC Name", key="login_user")
             p = st.text_input("Password", type="password", key="login_pass")
             if st.button("Access System", use_container_width=True, type="primary"):
-                if selected_call_type in ["Enrollment", "Retention"]:
-                    st.error(f"The {selected_call_type} Call Module is not yet available. Please select Placement or Impact Assessment.")
+                if selected_call_type in ["Retention"]:
+                    st.error(f"The {selected_call_type} Call Module is not yet available. Please select Placement, Enrollment, or Impact Assessment.")
                 else:
                     auth_recs = fetch_auth_data()
                     match = next((r for r in auth_recs if str(r.get("spoc_name")).strip().lower() == u.strip().lower()), None)
@@ -1218,6 +1299,17 @@ if not st.session_state.logged_in:
                                 st.session_state.show_placement_resume_banner = True
                             else:
                                 st.session_state.show_placement_resume_banner = False
+                        elif selected_call_type == "Enrollment":
+                            all_enr_rows = fetch_enrollment_master_data(sheets.get("enrollment"))
+                            enr_students = get_enrollment_students_for_spoc(all_enr_rows, u)
+                            st.session_state.allocated_numbers = [s["contact_number"] for s in enr_students]
+                            saved_q, saved_act = get_saved_enrollment_index(u, enr_students)
+                            st.session_state.enrollment_queue_index = saved_q
+                            st.session_state.enrollment_active_call_index = saved_act
+                            if saved_q > 0 and saved_q < len(enr_students):
+                                st.session_state.show_enrollment_resume_banner = True
+                            else:
+                                st.session_state.show_enrollment_resume_banner = False
                         else:
                             alloc_data = fetch_allocation_data()
                             spoc_numbers = [
@@ -1274,22 +1366,23 @@ else:
         st.sidebar.markdown(f"### 👤 Logged In: **{st.session_state.user}**")
         sb_proj = st.sidebar.selectbox(
             "🔄 Switch Call Type",
-            ["Placement", "Impact Assessment"],
+            ["Placement", "Enrollment", "Impact Assessment"],
             index=0,
             key="sb_call_type_switcher_plc"
         )
         if sb_proj != "Placement":
             st.session_state.call_type = sb_proj
-            alloc_data = fetch_allocation_data()
-            spoc_numbers = [
-                str(r.get("phone_number")).strip() for r in alloc_data 
-                if str(r.get("SPOC_Name")).strip().lower() == st.session_state.user.strip().lower() and r.get("phone_number")
-            ]
-            st.session_state.allocated_numbers = spoc_numbers
-            saved_idx, saved_active = get_spoc_saved_index(st.session_state.user, spoc_numbers)
-            st.session_state.queue_index = saved_idx
-            if spoc_numbers:
-                load_student_by_phone(spoc_numbers[saved_idx if saved_idx < len(spoc_numbers) else 0])
+            if sb_proj == "Impact Assessment":
+                alloc_data = fetch_allocation_data()
+                spoc_numbers = [
+                    str(r.get("phone_number")).strip() for r in alloc_data 
+                    if str(r.get("SPOC_Name")).strip().lower() == st.session_state.user.strip().lower() and r.get("phone_number")
+                ]
+                st.session_state.allocated_numbers = spoc_numbers
+                saved_idx, saved_active = get_spoc_saved_index(st.session_state.user, spoc_numbers)
+                st.session_state.queue_index = saved_idx
+                if spoc_numbers:
+                    load_student_by_phone(spoc_numbers[saved_idx if saved_idx < len(spoc_numbers) else 0])
             st.rerun()
 
         if st.sidebar.button("🔴 Logout", use_container_width=True, key="sb_plc_logout_btn"):
@@ -1300,6 +1393,40 @@ else:
 
         # Render complete high speed placement verification dashboard
         render_placement_dashboard(sheets.get("placement"), st.session_state.user, is_admin=is_admin)
+        st.stop()
+
+    elif st.session_state.get("call_type") == "Enrollment":
+        # Sidebar Project Switcher & User Profile
+        st.sidebar.markdown(f"### 👤 Logged In: **{st.session_state.user}**")
+        sb_proj_enr = st.sidebar.selectbox(
+            "🔄 Switch Call Type",
+            ["Enrollment", "Placement", "Impact Assessment"],
+            index=0,
+            key="sb_call_type_switcher_enr"
+        )
+        if sb_proj_enr != "Enrollment":
+            st.session_state.call_type = sb_proj_enr
+            if sb_proj_enr == "Impact Assessment":
+                alloc_data = fetch_allocation_data()
+                spoc_numbers = [
+                    str(r.get("phone_number")).strip() for r in alloc_data 
+                    if str(r.get("SPOC_Name")).strip().lower() == st.session_state.user.strip().lower() and r.get("phone_number")
+                ]
+                st.session_state.allocated_numbers = spoc_numbers
+                saved_idx, saved_active = get_spoc_saved_index(st.session_state.user, spoc_numbers)
+                st.session_state.queue_index = saved_idx
+                if spoc_numbers:
+                    load_student_by_phone(spoc_numbers[saved_idx if saved_idx < len(spoc_numbers) else 0])
+            st.rerun()
+
+        if st.sidebar.button("🔴 Logout", use_container_width=True, key="sb_enr_logout_btn"):
+            st.session_state.logged_in = False
+            st.session_state.user = ""
+            st.session_state.allocated_numbers = []
+            st.rerun()
+
+        # Render complete high speed enrollment verification dashboard
+        render_enrollment_dashboard(sheets.get("enrollment"), st.session_state.user, is_admin=is_admin)
         st.stop()
 
     # ==========================================================================
@@ -1341,7 +1468,7 @@ else:
     st.sidebar.markdown(f"### 👤 Logged In: **{st.session_state.user}**")
     sb_proj_ia = st.sidebar.selectbox(
         "🔄 Switch Call Type",
-        ["Impact Assessment", "Placement"],
+        ["Impact Assessment", "Placement", "Enrollment"],
         index=0,
         key="sb_call_type_switcher_ia"
     )
