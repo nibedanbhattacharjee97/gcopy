@@ -51,7 +51,8 @@ PLACEMENT_NOT_WORKING_OPTIONS = [
     "Did_not_joined_job_due_to_profile_issue",
     "Did not get any information from the employer",
     "Did not get selected",
-    "Did Not Attend Any Interview"
+    "Did Not Attend Any Interview",
+    "Dont Share any Information"
 ]
 
 # Image 4 - Column 3: Did_not_joined_job_due_to_personal_issue sub-reasons
@@ -60,7 +61,8 @@ PLACEMENT_NOT_JOINED_PERSONAL_OPTIONS = [
     "As The Student Is Pursuing 1st Year",
     "As The Student Is Pursuing 2nd Year",
     "As The Student Is Pursuing 3rd Year",
-    "Medical Issue"
+    "Medical Issue",
+    "Dont Want To Share"
 ]
 
 # Image 4 - Column 4: Did_not_joined_job_due_to_profile_issue sub-reasons
@@ -85,6 +87,7 @@ PLACEMENT_LEFT_JOB_OPTIONS = [
     "Night Shift",
     "Internship/Project Completed",
     "Company Closed"
+
 ]
 
 PLACEMENT_CONFIRMED_NAME_OPTIONS = [
