@@ -415,7 +415,7 @@ def compute_placement_stats(students, live_history=None):
 # ==============================================================================
 # 🟢 FRESH CALL LIST UI COMPONENT
 # ==============================================================================
-def render_placement_fresh_call_list(fresh_stats, current_spoc, all_placement_students=None, active_queue_students=None, is_admin=False, selected_perf_view=None):
+def render_placement_fresh_call_list(fresh_stats, current_spoc, all_placement_students=None, active_queue_students=None, is_admin=False, selected_perf_view=None, key_prefix="pop"):
     f_spoc = (current_spoc or "All Team").title()
     v_pending = fresh_stats.get("fresh_pending", 0)
     v_assigned = fresh_stats.get("total_assigned", 0)
@@ -449,7 +449,7 @@ def render_placement_fresh_call_list(fresh_stats, current_spoc, all_placement_st
             "Just Numbers",
             value=just_nums_text,
             height=160,
-            key=f"plc_ta_just_nums_{f_spoc}",
+            key=f"plc_ta_just_nums_{f_spoc}_{key_prefix}",
             help="Click inside and press Ctrl+A / Ctrl+C to copy all pending numbers directly into your dialer."
         )
 
@@ -461,7 +461,7 @@ def render_placement_fresh_call_list(fresh_stats, current_spoc, all_placement_st
                 file_name=f"Placement_Fresh_Numbers_{f_spoc}_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
                 mime="text/plain",
                 use_container_width=True,
-                key=f"plc_dl_txt_{f_spoc}"
+                key=f"plc_dl_txt_{f_spoc}_{key_prefix}"
             )
         with c_dl2:
             csv_lines = ["Target_Num,Phone_Number,Student_Name,Company,Designation,Salary"]
@@ -473,14 +473,14 @@ def render_placement_fresh_call_list(fresh_stats, current_spoc, all_placement_st
                 file_name=f"Placement_Fresh_List_{f_spoc}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
                 mime="text/csv",
                 use_container_width=True,
-                key=f"plc_dl_csv_{f_spoc}"
+                key=f"plc_dl_csv_{f_spoc}_{key_prefix}"
             )
 
     with tab_queue:
         q_search = st.text_input(
             "Search phone or student name",
             placeholder="Type 10-digit number or name...",
-            key=f"plc_q_search_{f_spoc}",
+            key=f"plc_q_search_{f_spoc}_{key_prefix}",
             label_visibility="collapsed"
         )
         filtered = fresh_items
@@ -501,7 +501,7 @@ def render_placement_fresh_call_list(fresh_stats, current_spoc, all_placement_st
             with col_i1:
                 st.markdown(f"**Target #{it.get('queue_index', 0)+1}**: `{it['contact_number']}` &nbsp;·&nbsp; *{it['student_name']}* ({it.get('company_name', '')})")
             with col_i2:
-                if st.button("📞 Load", key=f"plc_btn_ld_{it['row_num']}", use_container_width=True):
+                if st.button("📞 Load", key=f"plc_btn_ld_{it['row_num']}_{key_prefix}", use_container_width=True):
                     # Locate student in active_queue_students by row_num
                     target_idx = None
                     if active_queue_students:
@@ -548,7 +548,7 @@ def render_placement_fresh_call_list(fresh_stats, current_spoc, all_placement_st
 # ==============================================================================
 # 📞 NOT CONTACTABLE POPUP COMPONENT (INTERACTIVE RE-CALL ENGINE)
 # ==============================================================================
-def render_placement_not_contactable_list(fresh_stats, current_spoc, all_placement_students=None, active_queue_students=None, is_admin=False, selected_perf_view=None):
+def render_placement_not_contactable_list(fresh_stats, current_spoc, all_placement_students=None, active_queue_students=None, is_admin=False, selected_perf_view=None, key_prefix="pop"):
     f_spoc = (current_spoc or "All Team").title()
     no_items = fresh_stats.get("no_list", [])
     no_count = len(no_items)
@@ -578,7 +578,7 @@ def render_placement_not_contactable_list(fresh_stats, current_spoc, all_placeme
             "Just Numbers",
             value=no_nums_text,
             height=160,
-            key=f"plc_ta_no_nums_{f_spoc}",
+            key=f"plc_ta_no_nums_{f_spoc}_{key_prefix}",
             help="Click inside and press Ctrl+A / Ctrl+C to copy all 'No' numbers directly into your dialer."
         )
 
@@ -590,7 +590,7 @@ def render_placement_not_contactable_list(fresh_stats, current_spoc, all_placeme
                 file_name=f"Placement_NotContactable_Numbers_{f_spoc}_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
                 mime="text/plain",
                 use_container_width=True,
-                key=f"plc_dl_no_txt_{f_spoc}"
+                key=f"plc_dl_no_txt_{f_spoc}_{key_prefix}"
             )
         with c_dl2:
             csv_lines = ["Target_Num,Sheet_Row,Phone_Number,Student_Name,Company,Reason,SPOC"]
@@ -602,14 +602,14 @@ def render_placement_not_contactable_list(fresh_stats, current_spoc, all_placeme
                 file_name=f"Placement_NotContactable_List_{f_spoc}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
                 mime="text/csv",
                 use_container_width=True,
-                key=f"plc_dl_no_csv_{f_spoc}"
+                key=f"plc_dl_no_csv_{f_spoc}_{key_prefix}"
             )
 
     with tab_queue:
         q_search = st.text_input(
             "Search phone, student name, or reason in unreached queue:",
             placeholder="🔍 Type phone number, student name, or reason (e.g. Ringing, Ping, Switched off)...",
-            key=f"plc_nc_search_{f_spoc}",
+            key=f"plc_nc_search_{f_spoc}_{key_prefix}",
             label_visibility="collapsed"
         )
 
@@ -639,7 +639,7 @@ def render_placement_not_contactable_list(fresh_stats, current_spoc, all_placeme
                     unsafe_allow_html=True
                 )
             with c2:
-                if st.button("🔁 Re-Call", key=f"plc_recall_{r_num}", use_container_width=True):
+                if st.button("🔁 Re-Call", key=f"plc_recall_{r_num}_{key_prefix}", use_container_width=True):
                     # 1. Locate student in active_queue_students by row_num
                     target_idx = None
                     if active_queue_students:
@@ -696,6 +696,8 @@ def render_placement_not_contactable_list(fresh_stats, current_spoc, all_placeme
                     # 4. Clear old widget states for this row to force fresh render from preset
                     for k in list(st.session_state.keys()):
                         if f"_{r_num}" in k and k.startswith("plc_"):
+                            st.session_state.pop(k, None)
+                        elif k.startswith("plc_preset_") and k != f"plc_preset_{r_num}":
                             st.session_state.pop(k, None)
 
                     # 5. Set editing & recall state flags
@@ -1233,6 +1235,24 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                 margin-top: 10px;
                 margin-bottom: 14px;
             }
+            .nocontact-pinned-card {
+                background: #fff7ed;
+                border: 1.5px solid #fed7aa;
+                border-left: 5px solid #ea580c;
+                border-radius: 10px;
+                padding: 14px 18px;
+                margin-bottom: 1.2rem;
+                box-shadow: 0 2px 8px rgba(234, 88, 12, 0.08);
+            }
+            .fresh-pinned-card {
+                background: #f0fdf4;
+                border: 1.5px solid #86efac;
+                border-left: 5px solid #16a34a;
+                border-radius: 10px;
+                padding: 14px 18px;
+                margin-bottom: 1.2rem;
+                box-shadow: 0 2px 8px rgba(22, 163, 74, 0.08);
+            }
         </style>
     """, unsafe_allow_html=True)
 
@@ -1401,8 +1421,18 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                 all_placement_students=all_placement_students,
                 active_queue_students=active_queue_students,
                 is_admin=is_admin,
-                selected_perf_view=selected_perf_view
+                selected_perf_view=selected_perf_view,
+                key_prefix="pop"
             )
+            st.markdown("---")
+            pin_fresh_pop = st.checkbox(
+                "📌 Keep Fresh List pinned above form",
+                value=st.session_state.get("pin_placement_fresh_call_list", False),
+                key=f"plc_chk_pin_fresh_pop_{display_scope_name}"
+            )
+            if pin_fresh_pop != st.session_state.get("pin_placement_fresh_call_list", False):
+                st.session_state.pin_placement_fresh_call_list = pin_fresh_pop
+                st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
 
     with col_pop2:
@@ -1414,8 +1444,82 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                 all_placement_students=all_placement_students,
                 active_queue_students=active_queue_students,
                 is_admin=is_admin,
-                selected_perf_view=selected_perf_view
+                selected_perf_view=selected_perf_view,
+                key_prefix="pop"
             )
+            st.markdown("---")
+            pin_no_pop = st.checkbox(
+                "📌 Keep 'No' List pinned above form",
+                value=st.session_state.get("pin_placement_no_call_list", False),
+                key=f"plc_chk_pin_no_pop_{display_scope_name}"
+            )
+            if pin_no_pop != st.session_state.get("pin_placement_no_call_list", False):
+                st.session_state.pin_placement_no_call_list = pin_no_pop
+                st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    # 1-Click Pin / Unpin Quick Controls Bar
+    col_tgl1, col_tgl2 = st.columns(2)
+    with col_tgl1:
+        if v_pending > 0:
+            is_f_pinned = st.session_state.get("pin_placement_fresh_call_list", False)
+            btn_lbl_f = "📌 Unpin Fresh List" if is_f_pinned else "📌 Pin Fresh List above form"
+            if st.button(btn_lbl_f, key=f"plc_tgl_btn_fresh_{display_scope_name}", use_container_width=True):
+                st.session_state.pin_placement_fresh_call_list = not is_f_pinned
+                st.session_state[f"plc_chk_pin_fresh_pop_{display_scope_name}"] = not is_f_pinned
+                st.rerun()
+    with col_tgl2:
+        if v_no > 0:
+            is_no_pinned = st.session_state.get("pin_placement_no_call_list", False)
+            btn_lbl_no = "📌 Unpin 'No' List" if is_no_pinned else "📌 Pin 'No' List above form"
+            if st.button(btn_lbl_no, key=f"plc_tgl_btn_no_{display_scope_name}", use_container_width=True):
+                st.session_state.pin_placement_no_call_list = not is_no_pinned
+                st.session_state[f"plc_chk_pin_no_pop_{display_scope_name}"] = not is_no_pinned
+                st.rerun()
+
+    # ==========================================================================
+    # 📌 PINNED QUEUE PANELS (INSTANT ZERO-LATENCY PINNING ABOVE TARGET FORM)
+    # ==========================================================================
+    if st.session_state.get("pin_placement_fresh_call_list") and v_pending > 0:
+        st.markdown('<div class="fresh-pinned-card">', unsafe_allow_html=True)
+        col_pf1, col_pf2 = st.columns([5, 1])
+        with col_pf1:
+            st.markdown(f"<div style='font-weight: 800; color: #166534; font-size: 1.05rem; display: flex; align-items: center; gap: 8px;'>🟢 Pinned Fresh Calling Queue ({display_scope_name}) — {v_pending} Pending</div>", unsafe_allow_html=True)
+        with col_pf2:
+            if st.button("✖ Unpin List", key=f"plc_btn_unpin_fresh_{display_scope_name}", use_container_width=True):
+                st.session_state.pin_placement_fresh_call_list = False
+                st.session_state[f"plc_chk_pin_fresh_pop_{display_scope_name}"] = False
+                st.rerun()
+        render_placement_fresh_call_list(
+            scope_stats,
+            display_scope_name,
+            all_placement_students=all_placement_students,
+            active_queue_students=active_queue_students,
+            is_admin=is_admin,
+            selected_perf_view=selected_perf_view,
+            key_prefix="pin"
+        )
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    if st.session_state.get("pin_placement_no_call_list") and v_no > 0:
+        st.markdown('<div class="nocontact-pinned-card">', unsafe_allow_html=True)
+        col_pn1, col_pn2 = st.columns([5, 1])
+        with col_pn1:
+            st.markdown(f"<div style='font-weight: 800; color: #9a3412; font-size: 1.05rem; display: flex; align-items: center; gap: 8px;'>📞 Pinned Not Contactable Queue ('No' Calls) ({display_scope_name}) — {v_no} Calls</div>", unsafe_allow_html=True)
+        with col_pn2:
+            if st.button("✖ Unpin List", key=f"plc_btn_unpin_no_{display_scope_name}", use_container_width=True):
+                st.session_state.pin_placement_no_call_list = False
+                st.session_state[f"plc_chk_pin_no_pop_{display_scope_name}"] = False
+                st.rerun()
+        render_placement_not_contactable_list(
+            scope_stats,
+            display_scope_name,
+            all_placement_students=all_placement_students,
+            active_queue_students=active_queue_students,
+            is_admin=is_admin,
+            selected_perf_view=selected_perf_view,
+            key_prefix="pin"
+        )
         st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown("<div style='margin-bottom: 14px;'></div>", unsafe_allow_html=True)
