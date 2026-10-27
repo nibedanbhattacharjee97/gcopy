@@ -17,6 +17,7 @@ warnings.filterwarnings("ignore", message=".*st\\.iframe.*")
 
 PROGRESS_ENROLLMENT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "spoc_enrollment_progress.json")
 LOCAL_ENROLLMENT_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "enrollment_data.csv")
+LOCAL_ENROLLMENT_EXCEL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Enrollment_Verification.xlsx")
 DATA_CACHE_TTL = 900  # 15 minutes TTL for zero API rate limit and lightning speed
 
 # ==============================================================================
@@ -101,6 +102,18 @@ ENROLLMENT_TRI_STATE_OPTIONS = [
     "Yes",
     "No",
     "Don't Share"
+]
+
+# Dropdown list for Question 3: Got information about Anudip (matching picture & Excel column T)
+ENROLLMENT_GOT_INFO_OPTIONS = [
+    "Friend",
+    "Neighbour",
+    "Relative",
+    "College",
+    "Faculty",
+    "Social Media",
+    "Others..",
+    "Don't want to share"
 ]
 
 ENROLLMENT_SATISFIED_OPTIONS = [
@@ -298,35 +311,81 @@ def get_saved_enrollment_index(spoc_name, student_list):
 # ==============================================================================
 # 📥 DATA FETCHING & MODELING (GOOGLE SHEETS + FALLBACK LOCAL CSV/EXCEL)
 # ==============================================================================
+def load_excel_enrollment_rows(file_path):
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(file_path, data_only=True)
+        ws_active = wb["Enrollment_Verification"] if "Enrollment_Verification" in wb.sheetnames else wb.active
+        rows = []
+        for r in ws_active.iter_rows(values_only=True):
+            if any(r):
+                row_39 = [str(c) if c is not None else "" for c in r[:39]]
+                if len(row_39) < 39:
+                    row_39.extend([""] * (39 - len(row_39)))
+                rows.append(row_39)
+        if len(rows) > 1 and any(len(r) > 0 and str(r[0]).strip() for r in rows[1:]):
+            return rows
+    except Exception:
+        pass
+    return []
+
+def load_csv_enrollment_rows(file_path):
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            rows = list(reader)
+        if len(rows) > 1 and any(len(r) > 0 and str(r[0]).strip() for r in rows[1:]):
+            return rows
+    except Exception:
+        pass
+    return []
+
 @st.cache_data(ttl=DATA_CACHE_TTL)
 def fetch_enrollment_master_data(_enrollment_ws):
     """
     Fetches all rows from Google Sheet 'enrollment_Verification' (15-min cache).
-    Falls back to uploaded session data or local enrollment_data.csv.
+    Falls back to session upload, local Enrollment_Verification.xlsx, or enrollment_data.csv.
     """
     # 1. Try Google Sheets
     if _enrollment_ws:
         try:
             rows = _enrollment_ws.get_all_values()
-            if rows and len(rows) > 1:
+            if rows and len(rows) > 1 and any(len(r) > 0 and str(r[0]).strip() for r in rows[1:]):
                 return rows
         except Exception:
             pass
 
     # 2. Try session state custom upload
     if "custom_enrollment_rows" in st.session_state and st.session_state.custom_enrollment_rows:
-        return st.session_state.custom_enrollment_rows
+        c_rows = st.session_state.custom_enrollment_rows
+        if len(c_rows) > 1 and any(len(r) > 0 and str(r[0]).strip() for r in c_rows[1:]):
+            return c_rows
 
-    # 3. Try local CSV fallback
+    # 3. Try local Excel (Enrollment_Verification.xlsx)
+    if os.path.exists(LOCAL_ENROLLMENT_EXCEL):
+        rows = load_excel_enrollment_rows(LOCAL_ENROLLMENT_EXCEL)
+        if rows:
+            return rows
+
+    # 4. Try local CSV fallback (enrollment_data.csv)
     if os.path.exists(LOCAL_ENROLLMENT_CSV):
-        try:
-            with open(LOCAL_ENROLLMENT_CSV, "r", encoding="utf-8") as f:
-                reader = csv.reader(f)
-                rows = list(reader)
-                if rows:
-                    return rows
-        except Exception:
-            pass
+        rows = load_csv_enrollment_rows(LOCAL_ENROLLMENT_CSV)
+        if rows:
+            return rows
+
+    # 5. Check parent directory fallbacks
+    parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    p_excel = os.path.join(parent_dir, "Enrollment_Verification.xlsx")
+    if os.path.exists(p_excel):
+        rows = load_excel_enrollment_rows(p_excel)
+        if rows:
+            return rows
+
+    p_csv = os.path.join(parent_dir, "enrollment_data.csv")
+    if os.path.exists(p_csv):
+        rows = load_csv_enrollment_rows(p_csv)
+        if rows:
+            return rows
 
     return []
 
@@ -340,8 +399,13 @@ def parse_all_enrollment_students(all_rows):
     students = []
     q_idx = 0
     for r_idx, r in enumerate(all_rows[1:], start=2):
-        if len(r) > 0 and str(r[0]).strip():
-            assigned_spoc = str(r[0]).strip()
+        if not any(r):
+            continue
+        assigned_spoc = str(r[0]).strip() if len(r) > 0 else ""
+        has_content = bool(assigned_spoc) or (len(r) > 4 and bool(str(r[4]).strip())) or (len(r) > 5 and bool(str(r[5]).strip()))
+        if has_content:
+            if not assigned_spoc:
+                assigned_spoc = "Unassigned"
             padded = list(r) + [""] * max(0, 42 - len(r))
             students.append({
                 "row_num": r_idx,
@@ -995,28 +1059,43 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
     # 🎯 TARGET SELECTION & NAVIGATION
     # ==========================================================================
     if is_admin:
-        admin_spoc_list = ["All SPOCs"] + all_spocs
-        sel_admin_spoc = st.selectbox(
-            "👤 Admin Filter: Working Queue for SPOC",
-            admin_spoc_list,
-            index=0,
-            key="enr_admin_spoc_filter"
-        )
-        if sel_admin_spoc == "All SPOCs":
-            active_queue_students = all_enrollment_students
-        else:
-            active_queue_students = [s for s in all_enrollment_students if s["called_by"].strip().lower() == sel_admin_spoc.strip().lower()]
+        if selected_perf_view != "🌐 All Team Combined (Portal Total)":
+            active_queue_students = scoped_students
             for i, s in enumerate(active_queue_students):
                 s["queue_index"] = i
+        else:
+            admin_spoc_list = ["All SPOCs"] + all_spocs
+            sel_admin_spoc = st.selectbox(
+                "👤 Admin Filter: Working Queue for SPOC",
+                admin_spoc_list,
+                index=0,
+                key="enr_admin_spoc_filter"
+            )
+            if sel_admin_spoc == "All SPOCs":
+                active_queue_students = all_enrollment_students
+            else:
+                active_queue_students = [s for s in all_enrollment_students if s["called_by"].strip().lower() == sel_admin_spoc.strip().lower()]
+                for i, s in enumerate(active_queue_students):
+                    s["queue_index"] = i
     else:
-        active_queue_students = [s for s in all_enrollment_students if s["called_by"].strip().lower() == current_spoc.strip().lower()]
-        for i, s in enumerate(active_queue_students):
-            s["queue_index"] = i
+        spoc_matches = [s for s in all_enrollment_students if s["called_by"].strip().lower() == current_spoc.strip().lower()]
+        if spoc_matches:
+            active_queue_students = spoc_matches
+            for i, s in enumerate(active_queue_students):
+                s["queue_index"] = i
+        else:
+            # Fallback so no SPOC is ever locked out of viewing their queue
+            active_queue_students = scoped_students if scoped_students else all_enrollment_students
+            for i, s in enumerate(active_queue_students):
+                s["queue_index"] = i
 
     total_assigned_queue = len(active_queue_students)
     if total_assigned_queue == 0:
-        st.warning(f"No students assigned to {current_spoc} in Enrollment verification.")
-        return
+        active_queue_students = all_enrollment_students
+        total_assigned_queue = len(active_queue_students)
+        if total_assigned_queue == 0:
+            st.warning("No enrollment verification records found. Please check data file or Google Sheet.")
+            return
 
     # Auto-resume verification index
     saved_q, saved_act = get_saved_enrollment_index(current_spoc, active_queue_students)
@@ -1454,15 +1533,25 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
 
         with col_q2:
             st.markdown('<div class="question-pill-header">3. Got information about Anudip?</div>', unsafe_allow_html=True)
-            def_info_val = row_preset.get("got_info_anudip", current_student["got_info_anudip"])
-            def_info_idx = get_tri_option_index(def_info_val, default="Yes")
-            f_got_info = st.radio(
+            raw_info = str(row_preset.get("got_info_anudip", current_student.get("got_info_anudip", "")) or "").strip()
+            def_info_idx = 0
+            if raw_info:
+                for idx, opt in enumerate(ENROLLMENT_GOT_INFO_OPTIONS):
+                    if opt.lower() == raw_info.lower() or opt.lower().replace(".", "") == raw_info.lower().replace(".", ""):
+                        def_info_idx = idx
+                        break
+            elif current_student.get("come_to_know"):
+                ctk = str(current_student["come_to_know"]).strip().lower()
+                for idx, opt in enumerate(ENROLLMENT_GOT_INFO_OPTIONS):
+                    if opt.lower() in ctk or ctk in opt.lower():
+                        def_info_idx = idx
+                        break
+            f_got_info = st.selectbox(
                 "Got information about Anudip",
-                ENROLLMENT_TRI_STATE_OPTIONS,
+                ENROLLMENT_GOT_INFO_OPTIONS,
                 index=def_info_idx,
-                horizontal=True,
                 label_visibility="collapsed",
-                key=f"enr_rad_info_{current_student['row_num']}"
+                key=f"enr_sel_info_{current_student['row_num']}"
             )
 
         with col_q3:

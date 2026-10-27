@@ -1403,6 +1403,13 @@ else:
                 st.session_state.queue_index = saved_idx
                 if spoc_numbers:
                     load_student_by_phone(spoc_numbers[saved_idx if saved_idx < len(spoc_numbers) else 0])
+            elif sb_proj == "Enrollment":
+                all_enr_rows = fetch_enrollment_master_data(sheets.get("enrollment"))
+                enr_students = get_enrollment_students_for_spoc(all_enr_rows, st.session_state.user)
+                st.session_state.allocated_numbers = [s["contact_number"] for s in enr_students]
+                saved_q, saved_act = get_saved_enrollment_index(st.session_state.user, enr_students)
+                st.session_state.enrollment_queue_index = saved_q
+                st.session_state.enrollment_active_call_index = saved_act
             st.rerun()
 
         if st.sidebar.button("🔴 Logout", use_container_width=True, key="sb_plc_logout_btn"):
@@ -1494,6 +1501,13 @@ else:
     )
     if sb_proj_ia != "Impact Assessment":
         st.session_state.call_type = sb_proj_ia
+        if sb_proj_ia == "Enrollment":
+            all_enr_rows = fetch_enrollment_master_data(sheets.get("enrollment"))
+            enr_students = get_enrollment_students_for_spoc(all_enr_rows, st.session_state.user)
+            st.session_state.allocated_numbers = [s["contact_number"] for s in enr_students]
+            saved_q, saved_act = get_saved_enrollment_index(st.session_state.user, enr_students)
+            st.session_state.enrollment_queue_index = saved_q
+            st.session_state.enrollment_active_call_index = saved_act
         st.rerun()
     st.sidebar.markdown("---")
     
