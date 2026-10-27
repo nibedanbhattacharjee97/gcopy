@@ -1407,6 +1407,24 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
 </div>"""
         st.markdown(b2_card, unsafe_allow_html=True)
 
+    # Initialize unified pin state flags
+    if "pin_placement_no_call_list" not in st.session_state:
+        st.session_state.pin_placement_no_call_list = False
+    if "pin_placement_fresh_call_list" not in st.session_state:
+        st.session_state.pin_placement_fresh_call_list = False
+
+    def toggle_pin_no():
+        st.session_state.pin_placement_no_call_list = not st.session_state.get("pin_placement_no_call_list", False)
+
+    def unpin_no():
+        st.session_state.pin_placement_no_call_list = False
+
+    def toggle_pin_fresh():
+        st.session_state.pin_placement_fresh_call_list = not st.session_state.get("pin_placement_fresh_call_list", False)
+
+    def unpin_fresh():
+        st.session_state.pin_placement_fresh_call_list = False
+
     # Popover buttons for Fresh Calls and Not Contactable
     col_pop1, col_pop2 = st.columns(2)
     with col_pop1:
@@ -1422,14 +1440,10 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                 key_prefix="pop"
             )
             st.markdown("---")
-            pin_fresh_pop = st.checkbox(
+            st.checkbox(
                 "📌 Keep Fresh List pinned above form",
-                value=st.session_state.get("pin_placement_fresh_call_list", False),
-                key=f"plc_chk_pin_fresh_pop_{display_scope_name}"
+                key="pin_placement_fresh_call_list"
             )
-            if pin_fresh_pop != st.session_state.get("pin_placement_fresh_call_list", False):
-                st.session_state.pin_placement_fresh_call_list = pin_fresh_pop
-                st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
 
     with col_pop2:
@@ -1445,34 +1459,34 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                 key_prefix="pop"
             )
             st.markdown("---")
-            pin_no_pop = st.checkbox(
+            st.checkbox(
                 "📌 Keep 'No' List pinned above form",
-                value=st.session_state.get("pin_placement_no_call_list", False),
-                key=f"plc_chk_pin_no_pop_{display_scope_name}"
+                key="pin_placement_no_call_list"
             )
-            if pin_no_pop != st.session_state.get("pin_placement_no_call_list", False):
-                st.session_state.pin_placement_no_call_list = pin_no_pop
-                st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
 
     # 1-Click Pin / Unpin Quick Controls Bar
     col_tgl1, col_tgl2 = st.columns(2)
     with col_tgl1:
         if v_pending > 0:
-            is_f_pinned = st.session_state.get("pin_placement_fresh_call_list", False)
+            is_f_pinned = bool(st.session_state.get("pin_placement_fresh_call_list", False))
             btn_lbl_f = "📌 Unpin Fresh List" if is_f_pinned else "📌 Pin Fresh List above form"
-            if st.button(btn_lbl_f, key=f"plc_tgl_btn_fresh_{display_scope_name}", use_container_width=True):
-                st.session_state.pin_placement_fresh_call_list = not is_f_pinned
-                st.session_state[f"plc_chk_pin_fresh_pop_{display_scope_name}"] = not is_f_pinned
-                st.rerun()
+            st.button(
+                btn_lbl_f,
+                key=f"plc_tgl_btn_fresh_{display_scope_name}",
+                on_click=toggle_pin_fresh,
+                use_container_width=True
+            )
     with col_tgl2:
         if v_no > 0:
-            is_no_pinned = st.session_state.get("pin_placement_no_call_list", False)
+            is_no_pinned = bool(st.session_state.get("pin_placement_no_call_list", False))
             btn_lbl_no = "📌 Unpin 'No' List" if is_no_pinned else "📌 Pin 'No' List above form"
-            if st.button(btn_lbl_no, key=f"plc_tgl_btn_no_{display_scope_name}", use_container_width=True):
-                st.session_state.pin_placement_no_call_list = not is_no_pinned
-                st.session_state[f"plc_chk_pin_no_pop_{display_scope_name}"] = not is_no_pinned
-                st.rerun()
+            st.button(
+                btn_lbl_no,
+                key=f"plc_tgl_btn_no_{display_scope_name}",
+                on_click=toggle_pin_no,
+                use_container_width=True
+            )
 
     # ==========================================================================
     # 📌 PINNED QUEUE PANELS (INSTANT ZERO-LATENCY PINNING ABOVE TARGET FORM)
@@ -1483,10 +1497,12 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
         with col_pf1:
             st.markdown(f"<div style='font-weight: 800; color: #166534; font-size: 1.05rem; display: flex; align-items: center; gap: 8px;'>🟢 Pinned Fresh Calling Queue ({display_scope_name}) — {v_pending} Pending</div>", unsafe_allow_html=True)
         with col_pf2:
-            if st.button("✖ Unpin List", key=f"plc_btn_unpin_fresh_{display_scope_name}", use_container_width=True):
-                st.session_state.pin_placement_fresh_call_list = False
-                st.session_state[f"plc_chk_pin_fresh_pop_{display_scope_name}"] = False
-                st.rerun()
+            st.button(
+                "✖ Unpin List",
+                key=f"plc_btn_unpin_fresh_{display_scope_name}",
+                on_click=unpin_fresh,
+                use_container_width=True
+            )
         render_placement_fresh_call_list(
             scope_stats,
             display_scope_name,
@@ -1504,10 +1520,12 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
         with col_pn1:
             st.markdown(f"<div style='font-weight: 800; color: #9a3412; font-size: 1.05rem; display: flex; align-items: center; gap: 8px;'>📞 Pinned Not Contactable Queue ('No' Calls) ({display_scope_name}) — {v_no} Calls</div>", unsafe_allow_html=True)
         with col_pn2:
-            if st.button("✖ Unpin List", key=f"plc_btn_unpin_no_{display_scope_name}", use_container_width=True):
-                st.session_state.pin_placement_no_call_list = False
-                st.session_state[f"plc_chk_pin_no_pop_{display_scope_name}"] = False
-                st.rerun()
+            st.button(
+                "✖ Unpin List",
+                key=f"plc_btn_unpin_no_{display_scope_name}",
+                on_click=unpin_no,
+                use_container_width=True
+            )
         render_placement_not_contactable_list(
             scope_stats,
             display_scope_name,
