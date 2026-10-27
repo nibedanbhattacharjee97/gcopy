@@ -43,8 +43,6 @@ PLACEMENT_RETENTION_OPTIONS = PLACEMENT_RETENTION_OPTIONS_YES + PLACEMENT_RETENT
 # Image 4 - Column 2: Unable_to_track reasons (When Contactable == No)
 PLACEMENT_UNABLE_TO_TRACK_OPTIONS = [
     "Did not respond to our call",
-    "Ringing / Ring Call (Ping Call)",
-    "Ping Call / Ringing",
     "Incoming Call Is Not Available",
     "Switched off",
     "Network issue",
@@ -52,8 +50,7 @@ PLACEMENT_UNABLE_TO_TRACK_OPTIONS = [
     "Call Disconnected / Busy",
     "Language issue",
     "Not a student of Anudip",
-    "Incoming Call Is Not Avialable",
-    "Others"
+    "Incoming Call Is Not Avialable"
 ]
 
 # Image 4 - Column 1: Not_working_at_all reasons (First-level under Not_working_at_all)
