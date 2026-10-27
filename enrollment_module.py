@@ -1524,7 +1524,7 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
             def_cs_idx = 0 if def_cs_val == "Yes" else 1
             f_class_started = st.radio(
                 "Class started (Yes/No)",
-                ["Yes", "No"],
+                ["Yes", "No","Dont Share"],
                 index=def_cs_idx,
                 horizontal=True,
                 label_visibility="collapsed",

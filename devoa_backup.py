@@ -196,28 +196,30 @@ def load_credentials(scopes):
     
     # 1. Check Streamlit Secrets under common keys (including [connections.gsheets])
     try:
-        if hasattr(st, "secrets"):
-            if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
-                secrets_dict = dict(st.secrets["connections"]["gsheets"])
-            elif "connections.gsheets" in st.secrets:
-                secrets_dict = dict(st.secrets["connections.gsheets"])
-            elif "gcp_service_account" in st.secrets:
-                secrets_dict = dict(st.secrets["gcp_service_account"])
-            elif "project_id" in st.secrets and "private_key" in st.secrets:
-                secrets_dict = dict(st.secrets)
+        raw_secrets = getattr(st, "secrets", None)
+        if raw_secrets is not None:
+            s_dict = dict(raw_secrets)
+            conn = s_dict.get("connections")
+            if isinstance(conn, dict) and "gsheets" in conn:
+                secrets_dict = dict(conn.get("gsheets", {}))
+            elif "connections.gsheets" in s_dict:
+                secrets_dict = dict(s_dict.get("connections.gsheets", {}))
+            elif "gcp_service_account" in s_dict:
+                secrets_dict = dict(s_dict.get("gcp_service_account", {}))
+            elif "project_id" in s_dict and "private_key" in s_dict:
+                secrets_dict = dict(s_dict)
             else:
-                for k in st.secrets.keys():
-                    val = st.secrets[k]
+                for k, val in s_dict.items():
                     if isinstance(val, dict) or hasattr(val, "get"):
                         if val.get("project_id") and val.get("private_key"):
                             secrets_dict = dict(val)
                             break
-                        for sub_k in val.keys():
-                            sub_val = val[sub_k]
-                            if isinstance(sub_val, dict) or hasattr(sub_val, "get"):
-                                if sub_val.get("project_id") and sub_val.get("private_key"):
-                                    secrets_dict = dict(sub_val)
-                                    break
+                        if hasattr(val, "items"):
+                            for sub_k, sub_val in val.items():
+                                if isinstance(sub_val, dict) or hasattr(sub_val, "get"):
+                                    if sub_val.get("project_id") and sub_val.get("private_key"):
+                                        secrets_dict = dict(sub_val)
+                                        break
                     if secrets_dict:
                         break
     except Exception:
