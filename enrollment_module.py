@@ -191,6 +191,37 @@ def get_enrollment_highest_verified_index(student_list):
             highest = idx
     return highest
 
+def update_local_enrollment_row(row_num, payload):
+    """Updates local CSV and session cache for zero data loss."""
+    try:
+        if os.path.exists(LOCAL_ENROLLMENT_CSV):
+            with open(LOCAL_ENROLLMENT_CSV, "r", encoding="utf-8") as f:
+                rows = list(csv.reader(f))
+            if 0 < row_num <= len(rows):
+                idx = row_num - 1
+                curr = list(rows[idx])
+                if len(curr) < 39:
+                    curr.extend([""] * (39 - len(curr)))
+                for i, val in enumerate(payload):
+                    curr[17 + i] = str(val)
+                rows[idx] = curr
+                with open(LOCAL_ENROLLMENT_CSV, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f)
+                    writer.writerows(rows)
+        if "custom_enrollment_rows" in st.session_state and st.session_state.custom_enrollment_rows:
+            crows = st.session_state.custom_enrollment_rows
+            if 0 < row_num <= len(crows):
+                idx = row_num - 1
+                curr = list(crows[idx])
+                if len(curr) < 39:
+                    curr.extend([""] * (39 - len(curr)))
+                for i, val in enumerate(payload):
+                    curr[17 + i] = str(val)
+                crows[idx] = curr
+                st.session_state.custom_enrollment_rows = crows
+    except Exception:
+        pass
+
 # ==============================================================================
 # 💾 PERSISTENCE & QUEUE PROGRESS FOR ENROLLMENT
 # ==============================================================================
@@ -1372,6 +1403,7 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
                 try:
                     if enrollment_ws:
                         enrollment_ws.update(values=[payload], range_name=f"R{current_student['row_num']}:AM{current_student['row_num']}")
+                    update_local_enrollment_row(current_student['row_num'], payload)
                     fetch_enrollment_master_data.clear()
 
                     st.session_state.enrollment_live_history.insert(0, (current_student['row_num'], list(payload)))
@@ -1720,6 +1752,7 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
                 try:
                     if enrollment_ws:
                         enrollment_ws.update(values=[payload], range_name=f"R{current_student['row_num']}:AM{current_student['row_num']}")
+                    update_local_enrollment_row(current_student['row_num'], payload)
                     fetch_enrollment_master_data.clear()
 
                     st.session_state.enrollment_live_history.insert(0, (current_student['row_num'], list(payload)))

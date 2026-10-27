@@ -313,20 +313,40 @@ def get_sheets_connection():
                 placement_ws = None
 
         # Open dedicated Enrollment Verification Sheet
+        enrollment_ws = None
         try:
-            enrollment_sh = gc.open_by_key("1lNVa5ELW7GR7vg3iPAedO5Ysy9UjcJM7l0-2vyDR5J8")
+            # 1. Primary: Dedicated standalone spreadsheet owned by nibedan.b@anudip.org
+            enr_sh = gc.open_by_key("1Vj0eKmM720emsRcSzU0rhKOX_dtCBIWlegVWlC-y0Dg")
             for ws_name in ["enrollment_Verification", "Enrollment_Verification", "enrollment_verification"]:
                 try:
-                    enrollment_ws = enrollment_sh.worksheet(ws_name)
+                    enrollment_ws = enr_sh.worksheet(ws_name)
                     break
                 except Exception:
                     pass
+            if not enrollment_ws:
+                enrollment_ws = enr_sh.sheet1
         except Exception:
             try:
-                enrollment_ws = gc.open("enrollment_Verification").sheet1
+                # 2. Search by name in Drive
+                enr_sh = gc.open("enrollment_verification")
+                for ws_name in ["enrollment_Verification", "Enrollment_Verification", "enrollment_verification"]:
+                    try:
+                        enrollment_ws = enr_sh.worksheet(ws_name)
+                        break
+                    except Exception:
+                        pass
+                if not enrollment_ws:
+                    enrollment_ws = enr_sh.sheet1
             except Exception:
+                # 3. Fallback to worksheet tab inside Placement_Verification
                 try:
-                    enrollment_ws = gc.open("Enrollment_Verification").sheet1
+                    enrollment_sh = gc.open_by_key("1lNVa5ELW7GR7vg3iPAedO5Ysy9UjcJM7l0-2vyDR5J8")
+                    for ws_name in ["enrollment_Verification", "Enrollment_Verification", "enrollment_verification"]:
+                        try:
+                            enrollment_ws = enrollment_sh.worksheet(ws_name)
+                            break
+                        except Exception:
+                            pass
                 except Exception:
                     enrollment_ws = None
         
