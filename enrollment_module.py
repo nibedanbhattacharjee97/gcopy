@@ -116,8 +116,7 @@ ENROLLMENT_GOT_INFO_OPTIONS = [
     "Social Media",
     "Others..",
     "Don't want to share",
-    " ",
-    "#NA"
+    " "
 ]
 
 ENROLLMENT_SATISFIED_OPTIONS = [
