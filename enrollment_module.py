@@ -76,6 +76,7 @@ ENROLLMENT_QUALITY_OPTIONS = [
 ]
 
 ENROLLMENT_CLASSES_WEEK_OPTIONS = [
+    "#NA",
     "1 Day",
     "2 Days",
     "3 Days",
@@ -87,6 +88,7 @@ ENROLLMENT_CLASSES_WEEK_OPTIONS = [
 ]
 
 ENROLLMENT_MONTHS_OPTIONS = [
+    "#NA",
     "Less than 1 Month",
     "1 Month",
     "2 Months",
@@ -113,7 +115,9 @@ ENROLLMENT_GOT_INFO_OPTIONS = [
     "Faculty",
     "Social Media",
     "Others..",
-    "Don't want to share"
+    "Don't want to share",
+    " ",
+    "#NA"
 ]
 
 ENROLLMENT_SATISFIED_OPTIONS = [
@@ -131,8 +135,7 @@ ENROLLMENT_REMARKS_YES_OPTIONS = [
     "Left The Course",
     "Cource Complete",
     "Confirmed Name & Disconnected.",
-    "Disconnected,Did'nt Share All Information.",
-    "Other"
+    "Disconnected,Did'nt Share All Information."
 ]
 
 # Master 39 Headers
