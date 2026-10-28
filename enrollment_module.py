@@ -41,6 +41,7 @@ ENROLLMENT_UNABLE_TO_TRACK_OPTIONS = [
 
 # Educational List from Column 42 of Enrollment Excel
 ENROLLMENT_EDUCATION_OPTIONS = [
+    " ",
     "12 Pass",
     "Graduate",
     "Below 10 Pass",
@@ -72,7 +73,8 @@ ENROLLMENT_QUALITY_OPTIONS = [
     "Very Good",
     "Good",
     "Average",
-    "Poor"
+    "Poor",
+    " "
 ]
 
 ENROLLMENT_CLASSES_WEEK_OPTIONS = [
