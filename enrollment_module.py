@@ -89,6 +89,13 @@ ENROLLMENT_CLASSES_WEEK_OPTIONS = [
     "Online / Flexible"
 ]
 
+ENROLLMENT_CLASS_MODE_OPTIONS = [
+    "Online",
+    "Offline",
+    "Hybrid",
+    "Dont Share"
+]
+
 ENROLLMENT_MONTHS_OPTIONS = [
     "#NA",
     "Less than 1 Month",
@@ -139,16 +146,16 @@ ENROLLMENT_REMARKS_YES_OPTIONS = [
     "Disconnected,Did'nt Share All Information."
 ]
 
-# Master 39 Headers
+# Master 40 Headers
 ENROLLMENT_HEADERS = [
     "Called By", "Batch Code", "Course Name", "Start Date", "Student Code",
     "Student Name", "DOB", "Gender", "Mobile No.", "Alt Mobile No",
     "Center Code", "State", "Come To Know", "Referral Person Name",
     "Education Qualification", "Funder Name", "Enrollment Status",
-    # Yellow Marked Verification Columns (18 to 39 / R to AM)
+    # Yellow Marked Verification Columns (18 to 40 / R to AN)
     "Contactable", "Class started (Yes/No)", "Got information about Anudip",
     "Referral Person Name(Yes/No)", "Your_DOB", "Monthly Family Income RS.",
-    "Satisfied With Conversation", "Classes In A Week", "Quality Of Classes",
+    "Satisfied With Conversation", "Classes In A Week", "Class Mode", "Quality Of Classes",
     "Current Educational Status", "Verification Date", "Interest In Job",
     "Present Working Status", "COMPANY NAME", "Salary", "Part Time /Full Time",
     "How Many Months Working", "Did They Left The Job After Joining Course",
@@ -217,8 +224,8 @@ def update_local_enrollment_row(row_num, payload):
             if 0 < row_num <= len(rows):
                 idx = row_num - 1
                 curr = list(rows[idx])
-                if len(curr) < 39:
-                    curr.extend([""] * (39 - len(curr)))
+                if len(curr) < 40:
+                    curr.extend([""] * (40 - len(curr)))
                 for i, val in enumerate(payload):
                     curr[17 + i] = str(val)
                 rows[idx] = curr
@@ -230,8 +237,8 @@ def update_local_enrollment_row(row_num, payload):
             if 0 < row_num <= len(crows):
                 idx = row_num - 1
                 curr = list(crows[idx])
-                if len(curr) < 39:
-                    curr.extend([""] * (39 - len(curr)))
+                if len(curr) < 40:
+                    curr.extend([""] * (40 - len(curr)))
                 for i, val in enumerate(payload):
                     curr[17 + i] = str(val)
                 crows[idx] = curr
@@ -323,10 +330,10 @@ def load_excel_enrollment_rows(file_path):
         rows = []
         for r in ws_active.iter_rows(values_only=True):
             if any(r):
-                row_39 = [str(c) if c is not None else "" for c in r[:39]]
-                if len(row_39) < 39:
-                    row_39.extend([""] * (39 - len(row_39)))
-                rows.append(row_39)
+                row_40 = [str(c) if c is not None else "" for c in r[:40]]
+                if len(row_40) < 40:
+                    row_40.extend([""] * (40 - len(row_40)))
+                rows.append(row_40)
         if len(rows) > 1 and any(len(r) > 0 and str(r[0]).strip() for r in rows[1:]):
             return rows
     except Exception:
@@ -431,7 +438,7 @@ def parse_all_enrollment_students(all_rows):
                 "education_qualification": padded[14].strip(),
                 "funder_name": padded[15].strip(),
                 "enrollment_status": padded[16].strip(),
-                # Yellow Marked Verified columns (18 to 39 / R to AM)
+                # Yellow Marked Verified columns (18 to 40 / R to AN)
                 "contactable": padded[17].strip(),
                 "class_started": padded[18].strip(),
                 "got_info_anudip": padded[19].strip(),
@@ -440,20 +447,21 @@ def parse_all_enrollment_students(all_rows):
                 "monthly_income": padded[22].strip(),
                 "satisfied_conversation": padded[23].strip(),
                 "classes_in_week": padded[24].strip(),
-                "quality_of_classes": padded[25].strip(),
-                "current_edu_status": padded[26].strip(),
-                "verification_date": padded[27].strip(),
-                "interest_in_job": padded[28].strip(),
-                "present_working_status": padded[29].strip(),
-                "company_name": padded[30].strip(),
-                "salary": padded[31].strip(),
-                "part_full_time": padded[32].strip(),
-                "how_many_months": padded[33].strip(),
-                "left_job_after_joining": padded[34].strip(),
-                "why_joined_course": padded[35].strip(),
-                "enroll_remarks": padded[36].strip(),
-                "remarks_2": padded[37].strip(),
-                "remarks_3": padded[38].strip() if len(padded) > 38 else ""
+                "class_mode": padded[25].strip(),
+                "quality_of_classes": padded[26].strip(),
+                "current_edu_status": padded[27].strip(),
+                "verification_date": padded[28].strip(),
+                "interest_in_job": padded[29].strip(),
+                "present_working_status": padded[30].strip(),
+                "company_name": padded[31].strip(),
+                "salary": padded[32].strip(),
+                "part_full_time": padded[33].strip(),
+                "how_many_months": padded[34].strip(),
+                "left_job_after_joining": padded[35].strip(),
+                "why_joined_course": padded[36].strip(),
+                "enroll_remarks": padded[37].strip(),
+                "remarks_2": padded[38].strip(),
+                "remarks_3": padded[39].strip() if len(padded) > 39 else ""
             })
             q_idx += 1
     return students
@@ -676,7 +684,7 @@ def build_enrollment_csv(students_subset, live_history=None, headers=None):
         r_num = s["row_num"]
         live_entry = live_map.get(r_num)
         if live_entry:
-            pad_live = list(live_entry) + [""] * max(0, 22 - len(live_entry))
+            pad_live = list(live_entry) + [""] * max(0, 23 - len(live_entry))
             row = [
                 s["called_by"], s["batch_code"], s["course_name"], s["start_date"],
                 s["student_code"], s["student_name"], s["dob"], s["gender"],
@@ -688,7 +696,7 @@ def build_enrollment_csv(students_subset, live_history=None, headers=None):
                 pad_live[5], pad_live[6], pad_live[7], pad_live[8], pad_live[9],
                 pad_live[10], pad_live[11], pad_live[12], pad_live[13], pad_live[14],
                 pad_live[15], pad_live[16], pad_live[17], pad_live[18], pad_live[19],
-                pad_live[20], pad_live[21]
+                pad_live[20], pad_live[21], pad_live[22]
             ]
         else:
             row = [
@@ -700,7 +708,7 @@ def build_enrollment_csv(students_subset, live_history=None, headers=None):
                 # Yellow Marked Verified columns
                 s["contactable"], s["class_started"], s["got_info_anudip"],
                 s["referral_person_ok"], s["your_dob"], s["monthly_income"],
-                s["satisfied_conversation"], s["classes_in_week"], s["quality_of_classes"],
+                s["satisfied_conversation"], s["classes_in_week"], s.get("class_mode", ""), s["quality_of_classes"],
                 s["current_edu_status"], s["verification_date"], s["interest_in_job"],
                 s["present_working_status"], s["company_name"], s["salary"],
                 s["part_full_time"], s["how_many_months"], s["left_job_after_joining"],
@@ -738,7 +746,7 @@ def render_enrollment_sidebar_download(all_enrollment_students, current_spoc, is
                     new_rows = []
                     for row in ws_active.iter_rows(values_only=True):
                         if any(row):
-                            new_rows.append([str(c) if c is not None else "" for c in row[:39]])
+                            new_rows.append([str(c) if c is not None else "" for c in row[:40]])
 
                 if new_rows and len(new_rows) > 1:
                     st.session_state.custom_enrollment_rows = new_rows
@@ -1467,25 +1475,26 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
                     "",                             # W: Monthly Family Income RS.
                     "",                             # X: Satisfied With Conversation
                     "",                             # Y: Classes In A Week
-                    "",                             # Z: Quality Of Classes
-                    "",                             # AA: Current Educational Status
-                    str(date.today()),              # AB: Verification Date
-                    "",                             # AC: Interest In Job
-                    "",                             # AD: Present Working Status
-                    "",                             # AE: COMPANY NAME
-                    "",                             # AF: Salary
-                    "",                             # AG: Part Time /Full Time
-                    "",                             # AH: How Many Months Working
-                    "",                             # AI: Did They Left The Job After Joining Course
-                    "",                             # AJ: Why They Joined Course, If Stu Working
-                    f_nocont_reason,                # AK: Enroll Remarks
-                    f_remarks_2_no.strip(),         # AL: Remarks 2
-                    f_remarks_3_no.strip()          # AM: Remarks 3
+                    "",                             # Z: Class Mode
+                    "",                             # AA: Quality Of Classes
+                    "",                             # AB: Current Educational Status
+                    str(date.today()),              # AC: Verification Date
+                    "",                             # AD: Interest In Job
+                    "",                             # AE: Present Working Status
+                    "",                             # AF: COMPANY NAME
+                    "",                             # AG: Salary
+                    "",                             # AH: Part Time /Full Time
+                    "",                             # AI: How Many Months Working
+                    "",                             # AJ: Did They Left The Job After Joining Course
+                    "",                             # AK: Why They Joined Course, If Stu Working
+                    f_nocont_reason,                # AL: Enroll Remarks
+                    f_remarks_2_no.strip(),         # AM: Remarks 2
+                    f_remarks_3_no.strip()          # AN: Remarks 3
                 ]
 
                 try:
                     if enrollment_ws:
-                        enrollment_ws.update(values=[payload], range_name=f"R{current_student['row_num']}:AM{current_student['row_num']}")
+                        enrollment_ws.update(values=[payload], range_name=f"R{current_student['row_num']}:AN{current_student['row_num']}")
                     update_local_enrollment_row(current_student['row_num'], payload)
                     fetch_enrollment_master_data.clear()
 
@@ -1572,7 +1581,7 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
                 key=f"enr_rad_ref_{current_student['row_num']}"
             )
 
-        col_q4, col_q5, col_q6 = st.columns(3)
+        col_q4, col_q5, col_q6, col_q7 = st.columns(4)
 
         with col_q4:
             st.markdown('<div class="question-pill-header">5. Your DOB (Verification)</div>', unsafe_allow_html=True)
@@ -1601,7 +1610,24 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
             )
 
         with col_q6:
-            st.markdown('<div class="question-pill-header">7. Quality Of Classes</div>', unsafe_allow_html=True)
+            st.markdown('<div class="question-pill-header">7. Class Mode</div>', unsafe_allow_html=True)
+            def_cm_val = row_preset.get("class_mode", current_student.get("class_mode", "")).strip()
+            def_cm_idx = 0
+            if def_cm_val:
+                for idx, opt in enumerate(ENROLLMENT_CLASS_MODE_OPTIONS):
+                    if opt.lower() == def_cm_val.lower() or (opt.lower() == "hybrid" and "hybr" in def_cm_val.lower()) or (opt.lower() == "dont share" and ("dont" in def_cm_val.lower() or "don't" in def_cm_val.lower())):
+                        def_cm_idx = idx
+                        break
+            f_class_mode = st.selectbox(
+                "Class Mode",
+                ENROLLMENT_CLASS_MODE_OPTIONS,
+                index=def_cm_idx,
+                label_visibility="collapsed",
+                key=f"enr_sel_cm_{current_student['row_num']}"
+            )
+
+        with col_q7:
+            st.markdown('<div class="question-pill-header">8. Quality Of Classes</div>', unsafe_allow_html=True)
             def_q_val = row_preset.get("quality_of_classes", current_student["quality_of_classes"]).strip()
             def_q_idx = 1  # default Very Good
             if def_q_val in ENROLLMENT_QUALITY_OPTIONS:
@@ -1614,10 +1640,10 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
                 key=f"enr_sel_quality_{current_student['row_num']}"
             )
 
-        col_q7, col_q8, col_q9 = st.columns(3)
+        col_q8, col_q9, col_q10 = st.columns(3)
 
-        with col_q7:
-            st.markdown('<div class="question-pill-header">8. Current Educational Status</div>', unsafe_allow_html=True)
+        with col_q8:
+            st.markdown('<div class="question-pill-header">9. Current Educational Status</div>', unsafe_allow_html=True)
             def_edu_val = row_preset.get("current_edu_status", current_student["current_edu_status"] or current_student["education_qualification"]).strip()
             def_edu_idx = 0
             if def_edu_val in ENROLLMENT_EDUCATION_OPTIONS:
@@ -1630,8 +1656,8 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
                 key=f"enr_sel_edu_{current_student['row_num']}"
             )
 
-        with col_q8:
-            st.markdown('<div class="question-pill-header">9. Monthly Family Income (RS.)</div>', unsafe_allow_html=True)
+        with col_q9:
+            st.markdown('<div class="question-pill-header">10. Monthly Family Income (RS.)</div>', unsafe_allow_html=True)
             f_income = st.text_input(
                 "Monthly Family Income RS.",
                 value=str(row_preset.get("monthly_income", current_student["monthly_income"])),
@@ -1640,8 +1666,8 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
                 key=f"enr_txt_inc_{current_student['row_num']}"
             )
 
-        with col_q9:
-            st.markdown('<div class="question-pill-header">10. Satisfied With Conversation?</div>', unsafe_allow_html=True)
+        with col_q10:
+            st.markdown('<div class="question-pill-header">11. Satisfied With Conversation?</div>', unsafe_allow_html=True)
             def_sat_val = row_preset.get("satisfied_conversation", current_student["satisfied_conversation"]).strip()
             def_sat_idx = 0
             if def_sat_val in ENROLLMENT_SATISFIED_OPTIONS:
@@ -1667,7 +1693,7 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
 
         col_w1, col_w2 = st.columns(2)
         with col_w1:
-            st.markdown('<div class="question-pill-header">11. Interest In Job?</div>', unsafe_allow_html=True)
+            st.markdown('<div class="question-pill-header">12. Interest In Job?</div>', unsafe_allow_html=True)
             def_ij_val = row_preset.get("interest_in_job", current_student["interest_in_job"])
             def_ij_idx = get_tri_option_index(def_ij_val, default="Yes")
             f_job_interest = st.radio(
@@ -1680,7 +1706,7 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
             )
 
         with col_w2:
-            st.markdown('<div class="question-pill-header">12. Present Working Status (Currently Employed)?</div>', unsafe_allow_html=True)
+            st.markdown('<div class="question-pill-header">13. Present Working Status (Currently Employed)?</div>', unsafe_allow_html=True)
             def_ws_val = row_preset.get("present_working_status", current_student["present_working_status"]).strip().capitalize()
             def_ws_idx = 0 if def_ws_val == "Yes" else 1
             f_working_status = st.radio(
@@ -1826,25 +1852,26 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
                     str(f_income).strip(),                           # W: Monthly Family Income RS.
                     f_satisfied,                                     # X: Satisfied With Conversation
                     f_classes_week,                                  # Y: Classes In A Week
-                    f_quality,                                       # Z: Quality Of Classes
-                    f_edu_status,                                    # AA: Current Educational Status
-                    str(date.today()),                               # AB: Verification Date
-                    f_job_interest,                                  # AC: Interest In Job
-                    f_working_status,                                # AD: Present Working Status
-                    f_comp_name.strip() if f_working_status == "Yes" else "", # AE: COMPANY NAME
-                    str(f_salary).strip() if f_working_status == "Yes" else "", # AF: Salary
-                    f_part_full if f_working_status == "Yes" else "",# AG: Part Time /Full Time
-                    f_months_work if f_working_status == "Yes" else "", # AH: How Many Months Working
-                    f_left_job if f_working_status == "Yes" else "", # AI: Did They Left The Job After Joining Course
-                    f_why_joined if f_working_status == "Yes" else "", # AJ: Why They Joined Course, If Stu Working
-                    f_enroll_remarks,                                # AK: Enroll Remarks
-                    f_remarks_2.strip(),                             # AL: Remarks 2
-                    f_remarks_3.strip()                              # AM: Remarks 3
+                    f_class_mode,                                    # Z: Class Mode
+                    f_quality,                                       # AA: Quality Of Classes
+                    f_edu_status,                                    # AB: Current Educational Status
+                    str(date.today()),                               # AC: Verification Date
+                    f_job_interest,                                  # AD: Interest In Job
+                    f_working_status,                                # AE: Present Working Status
+                    f_comp_name.strip() if f_working_status == "Yes" else "", # AF: COMPANY NAME
+                    str(f_salary).strip() if f_working_status == "Yes" else "", # AG: Salary
+                    f_part_full if f_working_status == "Yes" else "",# AH: Part Time /Full Time
+                    f_months_work if f_working_status == "Yes" else "", # AI: How Many Months Working
+                    f_left_job if f_working_status == "Yes" else "", # AJ: Did They Left The Job After Joining Course
+                    f_why_joined if f_working_status == "Yes" else "", # AK: Why They Joined Course, If Stu Working
+                    f_enroll_remarks,                                # AL: Enroll Remarks
+                    f_remarks_2.strip(),                             # AM: Remarks 2
+                    f_remarks_3.strip()                              # AN: Remarks 3
                 ]
 
                 try:
                     if enrollment_ws:
-                        enrollment_ws.update(values=[payload], range_name=f"R{current_student['row_num']}:AM{current_student['row_num']}")
+                        enrollment_ws.update(values=[payload], range_name=f"R{current_student['row_num']}:AN{current_student['row_num']}")
                     update_local_enrollment_row(current_student['row_num'], payload)
                     fetch_enrollment_master_data.clear()
 
@@ -1890,9 +1917,9 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
                 with h_c3:
                     stat_txt = f"Contactable: {hist_payload[0]}"
                     if hist_payload[0] == "No":
-                        stat_txt += f" • {hist_payload[19]}"
+                        stat_txt += f" • {hist_payload[20]}"
                     else:
-                        stat_txt += f" • Working: {hist_payload[12]}"
+                        stat_txt += f" • Working: {hist_payload[13]}"
                     st.markdown(f"<small style='color: #475569;'>{stat_txt}</small>", unsafe_allow_html=True)
                 with h_c4:
                     if st.button("✏️ Edit", key=f"enr_edit_hist_{hist_row_num}", use_container_width=True):
@@ -1911,20 +1938,21 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
                             "monthly_income": hist_payload[5],
                             "satisfied_conversation": hist_payload[6],
                             "classes_in_week": hist_payload[7],
-                            "quality_of_classes": hist_payload[8],
-                            "current_edu_status": hist_payload[9],
-                            "interest_in_job": hist_payload[11],
-                            "present_working_status": hist_payload[12],
-                            "company_name": hist_payload[13],
-                            "salary": hist_payload[14],
-                            "part_full_time": hist_payload[15],
-                            "how_many_months": hist_payload[16],
-                            "left_job_after_joining": hist_payload[17],
-                            "why_joined_course": hist_payload[18],
-                            "enroll_remarks": hist_payload[19],
-                            "remarks_2": hist_payload[20],
-                            "remarks_3": hist_payload[21] if len(hist_payload) > 21 else "",
-                            "nocont_reason": hist_payload[19] if hist_payload[0] == "No" else ""
+                            "class_mode": hist_payload[8],
+                            "quality_of_classes": hist_payload[9],
+                            "current_edu_status": hist_payload[10],
+                            "interest_in_job": hist_payload[12],
+                            "present_working_status": hist_payload[13],
+                            "company_name": hist_payload[14],
+                            "salary": hist_payload[15],
+                            "part_full_time": hist_payload[16],
+                            "how_many_months": hist_payload[17],
+                            "left_job_after_joining": hist_payload[18],
+                            "why_joined_course": hist_payload[19],
+                            "enroll_remarks": hist_payload[20],
+                            "remarks_2": hist_payload[21],
+                            "remarks_3": hist_payload[22] if len(hist_payload) > 22 else "",
+                            "nocont_reason": hist_payload[20] if hist_payload[0] == "No" else ""
                         }
                         st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
