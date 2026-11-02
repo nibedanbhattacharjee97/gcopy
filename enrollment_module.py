@@ -1571,7 +1571,7 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
             ref_txt = f" ({current_student['referral_person_name']})" if current_student['referral_person_name'] else ""
             st.markdown(f'<div class="question-pill-header">4. Referral Person Name{ref_txt}?</div>', unsafe_allow_html=True)
             def_ref_val = row_preset.get("referral_person_ok", current_student["referral_person_ok"]).strip().capitalize() or "Yes"
-            def_ref_idx = 0 if def_ref_val == "Yes" else (1 if def_ref_val == "No" else 2)
+            def_ref_idx = 0 if def_ref_val == "N/A" else (1 if def_ref_val == "No" else 2)
             f_referral_ok = st.radio(
                 "Referral Person Name(Yes/No)",
                 ["Yes", "No", "N/A"],
