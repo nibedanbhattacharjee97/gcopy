@@ -135,6 +135,19 @@ ENROLLMENT_SATISFIED_OPTIONS = [
     "Don't Want To Share"
 ]
 
+ENROLLMENT_CONTACTED_BLANK_REMARKS = {
+    "Confirmed Name & Disconnected.",
+    "Not a student of Anudip",
+    "Language issue"
+}
+
+ENROLLMENT_QUICK_CONTACTED_OPTIONS = [
+    "Full Verification (Complete Survey)",
+    "Confirmed Name & Disconnected.",
+    "Not a student of Anudip",
+    "Language issue"
+]
+
 ENROLLMENT_REMARKS_YES_OPTIONS = [
     "Successfully Verified / All Details Confirmed",
     "Enrolled & Attending Regular Classes",
@@ -143,6 +156,8 @@ ENROLLMENT_REMARKS_YES_OPTIONS = [
     "Left The Course",
     "Cource Complete",
     "Confirmed Name & Disconnected.",
+    "Not a student of Anudip",
+    "Language issue",
     "Disconnected,Did'nt Share All Information."
 ]
 
@@ -1522,399 +1537,520 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
     else:
         st.markdown("<div style='margin-top: 14px;'></div>", unsafe_allow_html=True)
 
-        # ----------------------------------------------------------------------
-        # Section 1: Course & Training Details
-        # ----------------------------------------------------------------------
+        existing_outcome = row_preset.get("call_outcome", row_preset.get("enroll_remarks", current_student.get("enroll_remarks", ""))).strip()
+        def_co_idx = 0
+        if existing_outcome in ENROLLMENT_CONTACTED_BLANK_REMARKS:
+            def_co_idx = ENROLLMENT_QUICK_CONTACTED_OPTIONS.index(existing_outcome)
+
         st.markdown("""
-            <div style="font-weight: 800; color: #0f4c81; font-size: 1.08rem; margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
-                <span>🎓 Section 1: Course & Training Details</span>
+            <div class="question-pill-header" style="text-align: left; background: #f0fdf4; border-color: #bbf7d0; color: #166534; padding: 8px 12px; border-radius: 8px; margin-top: 10px;">
+                📞 Verification Outcome / Call Type (Contactable = Yes)
             </div>
         """, unsafe_allow_html=True)
 
-        ref_key = f"enr_rad_ref_{current_student['row_num']}"
-        raw_ref_val = row_preset.get("referral_person_ok", current_student["referral_person_ok"]).strip()
-        def_ref_val = "Yes" if raw_ref_val.lower() == "yes" else ("No" if raw_ref_val.lower() == "no" else ("N/A" if raw_ref_val else "Yes"))
-        current_ref_choice = st.session_state.get(ref_key, def_ref_val)
-        is_ref_yes = (current_ref_choice == "Yes")
+        f_call_outcome = st.radio(
+            "Verification Outcome / Call Type",
+            ENROLLMENT_QUICK_CONTACTED_OPTIONS,
+            index=def_co_idx,
+            horizontal=True,
+            label_visibility="collapsed",
+            key=f"enr_rad_outcome_{current_student['row_num']}"
+        )
 
-        if is_ref_yes:
-            col_q1, col_q2, col_q3, col_q3_name = st.columns([1, 1, 1, 1])
-        else:
-            col_q1, col_q2, col_q3 = st.columns(3)
-
-        with col_q1:
-            st.markdown('<div class="question-pill-header">2. Class started? (Yes/No)</div>', unsafe_allow_html=True)
-            def_cs_val = row_preset.get("class_started", current_student["class_started"]).strip().capitalize() or "Yes"
-            def_cs_idx = 0 if def_cs_val == "Yes" else 1
-            f_class_started = st.radio(
-                "Class started (Yes/No)",
-                ["Yes", "No","Dont Share"],
-                index=def_cs_idx,
-                horizontal=True,
-                label_visibility="collapsed",
-                key=f"enr_rad_cs_{current_student['row_num']}"
-            )
-
-        with col_q2:
-            st.markdown('<div class="question-pill-header">3. Got information about Anudip?</div>', unsafe_allow_html=True)
-            raw_info = str(row_preset.get("got_info_anudip", current_student.get("got_info_anudip", "")) or "").strip()
-            def_info_idx = 0
-            if raw_info:
-                for idx, opt in enumerate(ENROLLMENT_GOT_INFO_OPTIONS):
-                    if opt.lower() == raw_info.lower() or opt.lower().replace(".", "") == raw_info.lower().replace(".", ""):
-                        def_info_idx = idx
-                        break
-            elif current_student.get("come_to_know"):
-                ctk = str(current_student["come_to_know"]).strip().lower()
-                for idx, opt in enumerate(ENROLLMENT_GOT_INFO_OPTIONS):
-                    if opt.lower() in ctk or ctk in opt.lower():
-                        def_info_idx = idx
-                        break
-            f_got_info = st.selectbox(
-                "Got information about Anudip",
-                ENROLLMENT_GOT_INFO_OPTIONS,
-                index=def_info_idx,
-                label_visibility="collapsed",
-                key=f"enr_sel_info_{current_student['row_num']}"
-            )
-
-        with col_q3:
-            ref_txt = f" ({current_student['referral_person_name']})" if current_student['referral_person_name'] else ""
-            st.markdown(f'<div class="question-pill-header">4. Referral Person Name{ref_txt}?</div>', unsafe_allow_html=True)
-            def_ref_idx = 0 if def_ref_val == "Yes" else (1 if def_ref_val == "No" else 2)
-            f_referral_ok = st.radio(
-                "Referral Person Name(Yes/No)",
-                ["Yes", "No", "N/A"],
-                index=def_ref_idx,
-                horizontal=True,
-                label_visibility="collapsed",
-                key=ref_key
-            )
-
-        if is_ref_yes:
-            with col_q3_name:
-                st.markdown('<div class="question-pill-header" style="background: #eff6ff; border-color: #93c5fd; color: #1e40af;">✍️ Please fill the Name</div>', unsafe_allow_html=True)
-                def_ref_name = row_preset.get("referral_name_fill", current_student.get("referral_name_fill", "") or current_student.get("referral_person_name", "")).strip()
-                f_referral_name_fill = st.text_input(
-                    "Please fill the Name",
-                    value=def_ref_name,
-                    placeholder="Enter referral person name...",
-                    label_visibility="collapsed",
-                    key=f"enr_txt_refname_{current_student['row_num']}"
-                )
-        else:
-            f_referral_name_fill = ""
-
-        col_q4, col_q5, col_q6, col_q7 = st.columns(4)
-
-        with col_q4:
-            st.markdown('<div class="question-pill-header">5. Your DOB (Verification)</div>', unsafe_allow_html=True)
-            raw_dob = parse_date_safe(row_preset.get("your_dob", current_student["your_dob"] or current_student["dob"]))
-            if not raw_dob:
-                raw_dob = date(2004, 1, 1)
-            f_your_dob = st.date_input(
-                "Your_DOB",
-                value=raw_dob,
-                label_visibility="collapsed",
-                key=f"enr_date_dob_{current_student['row_num']}"
-            )
-
-        with col_q5:
-            st.markdown('<div class="question-pill-header">6. Classes In A Week</div>', unsafe_allow_html=True)
-            def_cw_val = row_preset.get("classes_in_week", current_student["classes_in_week"]).strip()
-            def_cw_idx = 2  # default 3 Days
-            if def_cw_val in ENROLLMENT_CLASSES_WEEK_OPTIONS:
-                def_cw_idx = ENROLLMENT_CLASSES_WEEK_OPTIONS.index(def_cw_val)
-            f_classes_week = st.selectbox(
-                "Classes In A Week",
-                ENROLLMENT_CLASSES_WEEK_OPTIONS,
-                index=def_cw_idx,
-                label_visibility="collapsed",
-                key=f"enr_sel_cw_{current_student['row_num']}"
-            )
-
-        with col_q6:
-            st.markdown('<div class="question-pill-header">7. Class Mode</div>', unsafe_allow_html=True)
-            def_cm_val = row_preset.get("class_mode", current_student.get("class_mode", "")).strip()
-            def_cm_idx = 0
-            if def_cm_val:
-                for idx, opt in enumerate(ENROLLMENT_CLASS_MODE_OPTIONS):
-                    if opt.lower() == def_cm_val.lower() or (opt.lower() == "hybrid" and "hybr" in def_cm_val.lower()) or (opt.lower() == "dont share" and ("dont" in def_cm_val.lower() or "don't" in def_cm_val.lower())):
-                        def_cm_idx = idx
-                        break
-            f_class_mode = st.selectbox(
-                "Class Mode",
-                ENROLLMENT_CLASS_MODE_OPTIONS,
-                index=def_cm_idx,
-                label_visibility="collapsed",
-                key=f"enr_sel_cm_{current_student['row_num']}"
-            )
-
-        with col_q7:
-            st.markdown('<div class="question-pill-header">8. Quality Of Classes</div>', unsafe_allow_html=True)
-            def_q_val = row_preset.get("quality_of_classes", current_student["quality_of_classes"]).strip()
-            def_q_idx = 1  # default Very Good
-            if def_q_val in ENROLLMENT_QUALITY_OPTIONS:
-                def_q_idx = ENROLLMENT_QUALITY_OPTIONS.index(def_q_val)
-            f_quality = st.selectbox(
-                "Quality Of Classes",
-                ENROLLMENT_QUALITY_OPTIONS,
-                index=def_q_idx,
-                label_visibility="collapsed",
-                key=f"enr_sel_quality_{current_student['row_num']}"
-            )
-
-        col_q8, col_q9, col_q10 = st.columns(3)
-
-        with col_q8:
-            st.markdown('<div class="question-pill-header">9. Current Educational Status</div>', unsafe_allow_html=True)
-            def_edu_val = row_preset.get("current_edu_status", current_student["current_edu_status"] or current_student["education_qualification"]).strip()
-            def_edu_idx = 0
-            if def_edu_val in ENROLLMENT_EDUCATION_OPTIONS:
-                def_edu_idx = ENROLLMENT_EDUCATION_OPTIONS.index(def_edu_val)
-            f_edu_status = st.selectbox(
-                "Current Educational Status",
-                ENROLLMENT_EDUCATION_OPTIONS,
-                index=def_edu_idx,
-                label_visibility="collapsed",
-                key=f"enr_sel_edu_{current_student['row_num']}"
-            )
-
-        with col_q9:
-            st.markdown('<div class="question-pill-header">10. Monthly Family Income (RS.)</div>', unsafe_allow_html=True)
-            f_income = st.text_input(
-                "Monthly Family Income RS.",
-                value=str(row_preset.get("monthly_income", current_student["monthly_income"])),
-                placeholder="E.g. 15000, 20000, Below 10000...",
-                label_visibility="collapsed",
-                key=f"enr_txt_inc_{current_student['row_num']}"
-            )
-
-        with col_q10:
-            st.markdown('<div class="question-pill-header">11. Satisfied With Conversation?</div>', unsafe_allow_html=True)
-            def_sat_val = row_preset.get("satisfied_conversation", current_student["satisfied_conversation"]).strip()
-            def_sat_idx = 0
-            if def_sat_val in ENROLLMENT_SATISFIED_OPTIONS:
-                def_sat_idx = ENROLLMENT_SATISFIED_OPTIONS.index(def_sat_val)
-            f_satisfied = st.selectbox(
-                "Satisfied With Conversation",
-                ENROLLMENT_SATISFIED_OPTIONS,
-                index=def_sat_idx,
-                label_visibility="collapsed",
-                key=f"enr_sel_sat_{current_student['row_num']}"
-            )
-
-        st.markdown("<hr style='margin: 18px 0;'>", unsafe_allow_html=True)
-
-        # ----------------------------------------------------------------------
-        # Section 2: Employment & Career Interests
-        # ----------------------------------------------------------------------
-        st.markdown("""
-            <div style="font-weight: 800; color: #0f4c81; font-size: 1.08rem; margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
-                <span>💼 Section 2: Employment & Career Interests</span>
-            </div>
-        """, unsafe_allow_html=True)
-
-        col_w1, col_w2 = st.columns(2)
-        with col_w1:
-            st.markdown('<div class="question-pill-header">12. Interest In Job?</div>', unsafe_allow_html=True)
-            def_ij_val = row_preset.get("interest_in_job", current_student["interest_in_job"])
-            def_ij_idx = get_tri_option_index(def_ij_val, default="Yes")
-            f_job_interest = st.radio(
-                "Interest In Job",
-                ENROLLMENT_TRI_STATE_OPTIONS,
-                index=def_ij_idx,
-                horizontal=True,
-                label_visibility="collapsed",
-                key=f"enr_rad_ij_{current_student['row_num']}"
-            )
-
-        with col_w2:
-            st.markdown('<div class="question-pill-header">13. Present Working Status (Currently Employed)?</div>', unsafe_allow_html=True)
-            def_ws_val = row_preset.get("present_working_status", current_student["present_working_status"]).strip().capitalize()
-            def_ws_idx = 0 if def_ws_val == "Yes" else 1
-            f_working_status = st.radio(
-                "Present Working Status",
-                ["Yes", "No"],
-                index=def_ws_idx,
-                horizontal=True,
-                label_visibility="collapsed",
-                key=f"enr_rad_ws_{current_student['row_num']}"
-            )
-
-        # Conditional fields if Student is working
-        if f_working_status == "Yes":
-            st.markdown("""
-                <div style="background: #f0fdf4; border: 1.5px solid #86efac; border-left: 5px solid #16a34a; padding: 10px 14px; border-radius: 8px; margin: 10px 0; color: #166534; font-size: 0.92rem; font-weight: 700;">
-                    💼 Student is Currently Working — Please capture Employment & Job Details:
+        if f_call_outcome in ENROLLMENT_CONTACTED_BLANK_REMARKS:
+            st.markdown(f"""
+                <div style="background: #eff6ff; border: 1.5px solid #bfdbfe; border-left: 5px solid #2563eb; padding: 12px 16px; border-radius: 8px; margin: 12px 0;">
+                    <b style="color: #1e40af; font-size: 0.98rem;">📞 Student Contacted — {f_call_outcome}:</b>
+                    <div style="color: #1e3a8a; font-size: 0.88rem; margin-top: 3px;">
+                        The student answered the call (Contactable: <b>Yes</b>), but the full verification survey could not be completed.
+                        All fields in Section 1 (Course & Training Details) and Section 2 (Employment & Career Interests) will be saved as <b>empty ("")</b>.
+                    </div>
                 </div>
             """, unsafe_allow_html=True)
 
-            c_emp1, c_emp2, c_emp3 = st.columns(3)
-            with c_emp1:
-                f_comp_name = st.text_input(
-                    "Company Name",
-                    value=row_preset.get("company_name", current_student["company_name"]),
-                    placeholder="E.g. TCS, Reliance, Retail...",
-                    key=f"enr_txt_comp_{current_student['row_num']}"
+            c_qc1, c_qc2 = st.columns(2)
+            with c_qc1:
+                st.markdown('<div class="question-pill-header">Enroll Remarks (Outcome)</div>', unsafe_allow_html=True)
+                st.text_input(
+                    "Enroll Remarks",
+                    value=f_call_outcome,
+                    disabled=True,
+                    label_visibility="collapsed",
+                    key=f"enr_txt_qcrem_{current_student['row_num']}"
                 )
-            with c_emp2:
-                f_salary = st.text_input(
-                    "Salary (RS.)",
-                    value=str(row_preset.get("salary", current_student["salary"])),
-                    placeholder="E.g. 15000, 18000...",
-                    key=f"enr_txt_sal_{current_student['row_num']}"
-                )
-            with c_emp3:
-                def_pf_val = row_preset.get("part_full_time", current_student["part_full_time"]).strip().title()
-                def_pf_idx = 0 if def_pf_val == "Full Time" else (1 if def_pf_val == "Part Time" else 0)
-                f_part_full = st.selectbox(
-                    "Part Time / Full Time",
-                    ["Full Time", "Part Time"],
-                    index=def_pf_idx,
-                    key=f"enr_sel_pf_{current_student['row_num']}"
+            with c_qc2:
+                st.markdown('<div class="question-pill-header">Verification Date</div>', unsafe_allow_html=True)
+                st.date_input(
+                    "Verification Date",
+                    value=date.today(),
+                    disabled=True,
+                    label_visibility="collapsed",
+                    key=f"enr_date_qcdate_{current_student['row_num']}"
                 )
 
-            c_emp4, c_emp5, c_emp6 = st.columns(3)
-            with c_emp4:
-                def_hm_val = row_preset.get("how_many_months", current_student["how_many_months"]).strip()
-                def_hm_idx = 2  # default 2 Months
-                if def_hm_val in ENROLLMENT_MONTHS_OPTIONS:
-                    def_hm_idx = ENROLLMENT_MONTHS_OPTIONS.index(def_hm_val)
-                f_months_work = st.selectbox(
-                    "How Many Months Working?",
-                    ENROLLMENT_MONTHS_OPTIONS,
-                    index=def_hm_idx,
-                    key=f"enr_sel_hm_{current_student['row_num']}"
+            c_qc3, c_qc4 = st.columns(2)
+            with c_qc3:
+                f_remarks_2_quick = st.text_input(
+                    "Remarks 2 (SPOC Notes)",
+                    value=row_preset.get("remarks_2", current_student["remarks_2"]),
+                    key=f"enr_txt_rem2_quick_{current_student['row_num']}",
+                    placeholder="E.g. Student confirmed name then disconnected..."
                 )
-            with c_emp5:
-                def_lj_val = row_preset.get("left_job_after_joining", current_student["left_job_after_joining"]).strip().capitalize() or "No"
-                def_lj_idx = 0 if def_lj_val == "Yes" else (1 if def_lj_val == "No" else 2)
-                f_left_job = st.radio(
-                    "Did They Left Job After Joining Course?",
-                    ["Yes", "No", "N/A"],
-                    index=def_lj_idx,
-                    horizontal=True,
-                    key=f"enr_rad_lj_{current_student['row_num']}"
+            with c_qc4:
+                f_remarks_3_quick = st.text_input(
+                    "Remarks 3 (Supervisor / Center Notes)",
+                    value=row_preset.get("remarks_3", current_student["remarks_3"]),
+                    key=f"enr_txt_rem3_quick_{current_student['row_num']}",
+                    placeholder="Optional supervisor comment..."
                 )
-            with c_emp6:
-                def_wj_val = row_preset.get("why_joined_course", current_student["why_joined_course"]).strip()
-                def_wj_idx = 0
-                if def_wj_val in ENROLLMENT_WHY_JOINED_OPTIONS:
-                    def_wj_idx = ENROLLMENT_WHY_JOINED_OPTIONS.index(def_wj_val)
-                f_why_joined = st.selectbox(
-                    "Why They Joined Course, If Stu Working?",
-                    ENROLLMENT_WHY_JOINED_OPTIONS,
-                    index=def_wj_idx,
-                    key=f"enr_sel_wj_{current_student['row_num']}"
-                )
+
+            st.markdown("<br>", unsafe_allow_html=True)
+            btn_label_quick = f"💾 Update & Insert Verification (Row #{current_student['row_num']})" if (is_edit_mode or is_already_verified) else f"💾 Save & Insert Call ({f_call_outcome})"
+            if st.button(btn_label_quick, type="primary", use_container_width=True, key=f"enr_btn_quick_{current_student['row_num']}"):
+                with st.spinner("⚡ High Speed Sync to Google Sheets..."):
+                    payload = [
+                        "Yes",                          # R: Contactable
+                        "",                             # S: Class started (Yes/No)
+                        "",                             # T: Got information about Anudip
+                        "",                             # U: Referral Person Name(Yes/No)
+                        "",                             # V: Please fill the Name
+                        "",                             # W: Your_DOB
+                        "",                             # X: Monthly Family Income RS.
+                        "",                             # Y: Satisfied With Conversation
+                        "",                             # Z: Classes In A Week
+                        "",                             # AA: Class Mode
+                        "",                             # AB: Quality Of Classes
+                        "",                             # AC: Current Educational Status
+                        str(date.today()),              # AD: Verification Date
+                        "",                             # AE: Interest In Job
+                        "",                             # AF: Present Working Status
+                        "",                             # AG: COMPANY NAME
+                        "",                             # AH: Salary
+                        "",                             # AI: Part Time /Full Time
+                        "",                             # AJ: How Many Months Working
+                        "",                             # AK: Did They Left The Job After Joining Course
+                        "",                             # AL: Why They Joined Course, If Stu Working
+                        f_call_outcome,                 # AM: Enroll Remarks
+                        f_remarks_2_quick.strip(),      # AN: Remarks 2
+                        f_remarks_3_quick.strip()       # AO: Remarks 3
+                    ]
+
+                    try:
+                        if enrollment_ws:
+                            enrollment_ws.update(values=[payload], range_name=f"R{current_student['row_num']}:AO{current_student['row_num']}")
+                        update_local_enrollment_row(current_student['row_num'], payload)
+                        fetch_enrollment_master_data.clear()
+
+                        st.session_state.enrollment_live_history.insert(0, (current_student['row_num'], list(payload)))
+                        st.session_state.enrollment_live_history = st.session_state.enrollment_live_history[:25]
+                        st.session_state.pop("enrollment_editing_row", None)
+
+                        st.toast(f"✅ Saved Target #{current_q_idx + 1} ({current_student['student_name']}) as Contactable: {f_call_outcome}!", icon="🎯")
+
+                        if current_q_idx + 1 < total_assigned_queue:
+                            st.session_state.enrollment_queue_index = current_q_idx + 1
+                            next_s = active_queue_students[current_q_idx + 1]
+                            save_enrollment_progress(current_spoc, current_q_idx + 1, next_s["contact_number"], active_call_index=st.session_state.get("enrollment_active_call_index", 0))
+
+                        time.sleep(0.3)
+                        st.rerun()
+                    except Exception as ex:
+                        st.error(f"Error saving to Google Sheets: {ex}")
         else:
-            f_comp_name = ""
-            f_salary = ""
-            f_part_full = ""
-            f_months_work = ""
-            f_left_job = ""
-            f_why_joined = ""
+            # ----------------------------------------------------------------------
+            # Section 1: Course & Training Details
+            # ----------------------------------------------------------------------
+            st.markdown("""
+                <div style="font-weight: 800; color: #0f4c81; font-size: 1.08rem; margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
+                    <span>🎓 Section 1: Course & Training Details</span>
+                </div>
+            """, unsafe_allow_html=True)
 
-        st.markdown("<hr style='margin: 18px 0;'>", unsafe_allow_html=True)
+            ref_key = f"enr_rad_ref_{current_student['row_num']}"
+            raw_ref_val = row_preset.get("referral_person_ok", current_student["referral_person_ok"]).strip()
+            def_ref_val = "Yes" if raw_ref_val.lower() == "yes" else ("No" if raw_ref_val.lower() == "no" else ("N/A" if raw_ref_val else "Yes"))
+            current_ref_choice = st.session_state.get(ref_key, def_ref_val)
+            is_ref_yes = (current_ref_choice == "Yes")
 
-        # ----------------------------------------------------------------------
-        # Section 3: Final Disposition & Remarks
-        # ----------------------------------------------------------------------
-        st.markdown("""
-            <div style="font-weight: 800; color: #0f4c81; font-size: 1.08rem; margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
-                <span>📋 Section 3: Final Disposition & Remarks</span>
-            </div>
-        """, unsafe_allow_html=True)
+            if is_ref_yes:
+                col_q1, col_q2, col_q3, col_q3_name = st.columns([1, 1, 1, 1])
+            else:
+                col_q1, col_q2, col_q3 = st.columns(3)
 
-        c_rem1, c_rem2 = st.columns([1.5, 1.0])
-        with c_rem1:
-            existing_er = row_preset.get("enroll_remarks", current_student["enroll_remarks"]).strip()
-            def_er_idx = 0
-            if existing_er in ENROLLMENT_REMARKS_YES_OPTIONS:
-                def_er_idx = ENROLLMENT_REMARKS_YES_OPTIONS.index(existing_er)
-            f_enroll_remarks = st.selectbox(
-                "Enroll Remarks (Final Disposition)",
-                ENROLLMENT_REMARKS_YES_OPTIONS,
-                index=def_er_idx,
-                key=f"enr_sel_er_{current_student['row_num']}"
-            )
-        with c_rem2:
-            st.date_input(
-                "Verification Date",
-                value=date.today(),
-                disabled=True,
-                key=f"enr_date_vdate_{current_student['row_num']}"
-            )
+            with col_q1:
+                st.markdown('<div class="question-pill-header">2. Class started? (Yes/No)</div>', unsafe_allow_html=True)
+                def_cs_val = row_preset.get("class_started", current_student["class_started"]).strip().capitalize() or "Yes"
+                def_cs_idx = 0 if def_cs_val == "Yes" else 1
+                f_class_started = st.radio(
+                    "Class started (Yes/No)",
+                    ["Yes", "No","Dont Share"],
+                    index=def_cs_idx,
+                    horizontal=True,
+                    label_visibility="collapsed",
+                    key=f"enr_rad_cs_{current_student['row_num']}"
+                )
 
-        c_rem3, c_rem4 = st.columns(2)
-        with c_rem3:
-            f_remarks_2 = st.text_input(
-                "Remarks 2 (SPOC Notes)",
-                value=row_preset.get("remarks_2", current_student["remarks_2"]),
-                key=f"enr_txt_rem2_{current_student['row_num']}",
-                placeholder="E.g. Verified with student, details confirmed..."
-            )
-        with c_rem4:
-            f_remarks_3 = st.text_input(
-                "Remarks 3 (Supervisor / Center Notes)",
-                value=row_preset.get("remarks_3", current_student["remarks_3"]),
-                key=f"enr_txt_rem3_{current_student['row_num']}",
-                placeholder="Optional supervisor notes..."
-            )
+            with col_q2:
+                st.markdown('<div class="question-pill-header">3. Got information about Anudip?</div>', unsafe_allow_html=True)
+                raw_info = str(row_preset.get("got_info_anudip", current_student.get("got_info_anudip", "")) or "").strip()
+                def_info_idx = 0
+                if raw_info:
+                    for idx, opt in enumerate(ENROLLMENT_GOT_INFO_OPTIONS):
+                        if opt.lower() == raw_info.lower() or opt.lower().replace(".", "") == raw_info.lower().replace(".", ""):
+                            def_info_idx = idx
+                            break
+                elif current_student.get("come_to_know"):
+                    ctk = str(current_student["come_to_know"]).strip().lower()
+                    for idx, opt in enumerate(ENROLLMENT_GOT_INFO_OPTIONS):
+                        if opt.lower() in ctk or ctk in opt.lower():
+                            def_info_idx = idx
+                            break
+                f_got_info = st.selectbox(
+                    "Got information about Anudip",
+                    ENROLLMENT_GOT_INFO_OPTIONS,
+                    index=def_info_idx,
+                    label_visibility="collapsed",
+                    key=f"enr_sel_info_{current_student['row_num']}"
+                )
 
-        st.markdown("<br>", unsafe_allow_html=True)
-        btn_submit_label = f"💾 Update & Insert Enrollment Verification (Row #{current_student['row_num']})" if (is_edit_mode or is_already_verified) else "💾 Submit Enrollment Verification"
-        if st.button(btn_submit_label, type="primary", use_container_width=True, key=f"enr_btn_submit_{current_student['row_num']}"):
-            with st.spinner("⚡ High Speed Sync to Google Sheets..."):
-                payload = [
-                    "Yes",                                           # R: Contactable
-                    f_class_started,                                 # S: Class started (Yes/No)
-                    f_got_info,                                      # T: Got information about Anudip
-                    f_referral_ok,                                   # U: Referral Person Name(Yes/No)
-                    f_referral_name_fill.strip() if f_referral_ok == "Yes" else "", # V: Please fill the Name
-                    str(f_your_dob),                                 # W: Your_DOB
-                    str(f_income).strip(),                           # X: Monthly Family Income RS.
-                    f_satisfied,                                     # Y: Satisfied With Conversation
-                    f_classes_week,                                  # Z: Classes In A Week
-                    f_class_mode,                                    # AA: Class Mode
-                    f_quality,                                       # AB: Quality Of Classes
-                    f_edu_status,                                    # AC: Current Educational Status
-                    str(date.today()),                               # AD: Verification Date
-                    f_job_interest,                                  # AE: Interest In Job
-                    f_working_status,                                # AF: Present Working Status
-                    f_comp_name.strip() if f_working_status == "Yes" else "", # AG: COMPANY NAME
-                    str(f_salary).strip() if f_working_status == "Yes" else "", # AH: Salary
-                    f_part_full if f_working_status == "Yes" else "",# AI: Part Time /Full Time
-                    f_months_work if f_working_status == "Yes" else "", # AJ: How Many Months Working
-                    f_left_job if f_working_status == "Yes" else "", # AK: Did They Left The Job After Joining Course
-                    f_why_joined if f_working_status == "Yes" else "", # AL: Why They Joined Course, If Stu Working
-                    f_enroll_remarks,                                # AM: Enroll Remarks
-                    f_remarks_2.strip(),                             # AN: Remarks 2
-                    f_remarks_3.strip()                              # AO: Remarks 3
-                ]
+            with col_q3:
+                ref_txt = f" ({current_student['referral_person_name']})" if current_student['referral_person_name'] else ""
+                st.markdown(f'<div class="question-pill-header">4. Referral Person Name{ref_txt}?</div>', unsafe_allow_html=True)
+                def_ref_idx = 0 if def_ref_val == "Yes" else (1 if def_ref_val == "No" else 2)
+                f_referral_ok = st.radio(
+                    "Referral Person Name(Yes/No)",
+                    ["Yes", "No", "N/A"],
+                    index=def_ref_idx,
+                    horizontal=True,
+                    label_visibility="collapsed",
+                    key=ref_key
+                )
 
-                try:
-                    if enrollment_ws:
-                        enrollment_ws.update(values=[payload], range_name=f"R{current_student['row_num']}:AO{current_student['row_num']}")
-                    update_local_enrollment_row(current_student['row_num'], payload)
-                    fetch_enrollment_master_data.clear()
+            if is_ref_yes:
+                with col_q3_name:
+                    st.markdown('<div class="question-pill-header" style="background: #eff6ff; border-color: #93c5fd; color: #1e40af;">✍️ Please fill the Name</div>', unsafe_allow_html=True)
+                    def_ref_name = row_preset.get("referral_name_fill", current_student.get("referral_name_fill", "") or current_student.get("referral_person_name", "")).strip()
+                    f_referral_name_fill = st.text_input(
+                        "Please fill the Name",
+                        value=def_ref_name,
+                        placeholder="Enter referral person name...",
+                        label_visibility="collapsed",
+                        key=f"enr_txt_refname_{current_student['row_num']}"
+                    )
+            else:
+                f_referral_name_fill = ""
 
-                    st.session_state.enrollment_live_history.insert(0, (current_student['row_num'], list(payload)))
-                    st.session_state.enrollment_live_history = st.session_state.enrollment_live_history[:25]
-                    st.session_state.pop("enrollment_editing_row", None)
+            col_q4, col_q5, col_q6, col_q7 = st.columns(4)
 
-                    st.toast(f"✅ Target #{current_q_idx + 1} ({current_student['student_name']}) saved successfully in Google Sheets!", icon="🎯")
+            with col_q4:
+                st.markdown('<div class="question-pill-header">5. Your DOB (Verification)</div>', unsafe_allow_html=True)
+                raw_dob = parse_date_safe(row_preset.get("your_dob", current_student["your_dob"] or current_student["dob"]))
+                if not raw_dob:
+                    raw_dob = date(2004, 1, 1)
+                f_your_dob = st.date_input(
+                    "Your_DOB",
+                    value=raw_dob,
+                    label_visibility="collapsed",
+                    key=f"enr_date_dob_{current_student['row_num']}"
+                )
 
-                    if current_q_idx + 1 < total_assigned_queue:
-                        st.session_state.enrollment_queue_index = current_q_idx + 1
-                        next_s = active_queue_students[current_q_idx + 1]
-                        save_enrollment_progress(current_spoc, current_q_idx + 1, next_s["contact_number"], active_call_index=st.session_state.get("enrollment_active_call_index", 0))
+            with col_q5:
+                st.markdown('<div class="question-pill-header">6. Classes In A Week</div>', unsafe_allow_html=True)
+                def_cw_val = row_preset.get("classes_in_week", current_student["classes_in_week"]).strip()
+                def_cw_idx = 2  # default 3 Days
+                if def_cw_val in ENROLLMENT_CLASSES_WEEK_OPTIONS:
+                    def_cw_idx = ENROLLMENT_CLASSES_WEEK_OPTIONS.index(def_cw_val)
+                f_classes_week = st.selectbox(
+                    "Classes In A Week",
+                    ENROLLMENT_CLASSES_WEEK_OPTIONS,
+                    index=def_cw_idx,
+                    label_visibility="collapsed",
+                    key=f"enr_sel_cw_{current_student['row_num']}"
+                )
 
-                    time.sleep(0.3)
-                    st.rerun()
-                except Exception as ex:
-                    st.error(f"Error saving to Google Sheets: {ex}")
+            with col_q6:
+                st.markdown('<div class="question-pill-header">7. Class Mode</div>', unsafe_allow_html=True)
+                def_cm_val = row_preset.get("class_mode", current_student.get("class_mode", "")).strip()
+                def_cm_idx = 0
+                if def_cm_val:
+                    for idx, opt in enumerate(ENROLLMENT_CLASS_MODE_OPTIONS):
+                        if opt.lower() == def_cm_val.lower() or (opt.lower() == "hybrid" and "hybr" in def_cm_val.lower()) or (opt.lower() == "dont share" and ("dont" in def_cm_val.lower() or "don't" in def_cm_val.lower())):
+                            def_cm_idx = idx
+                            break
+                f_class_mode = st.selectbox(
+                    "Class Mode",
+                    ENROLLMENT_CLASS_MODE_OPTIONS,
+                    index=def_cm_idx,
+                    label_visibility="collapsed",
+                    key=f"enr_sel_cm_{current_student['row_num']}"
+                )
+
+            with col_q7:
+                st.markdown('<div class="question-pill-header">8. Quality Of Classes</div>', unsafe_allow_html=True)
+                def_q_val = row_preset.get("quality_of_classes", current_student["quality_of_classes"]).strip()
+                def_q_idx = 1  # default Very Good
+                if def_q_val in ENROLLMENT_QUALITY_OPTIONS:
+                    def_q_idx = ENROLLMENT_QUALITY_OPTIONS.index(def_q_val)
+                f_quality = st.selectbox(
+                    "Quality Of Classes",
+                    ENROLLMENT_QUALITY_OPTIONS,
+                    index=def_q_idx,
+                    label_visibility="collapsed",
+                    key=f"enr_sel_quality_{current_student['row_num']}"
+                )
+
+            col_q8, col_q9, col_q10 = st.columns(3)
+
+            with col_q8:
+                st.markdown('<div class="question-pill-header">9. Current Educational Status</div>', unsafe_allow_html=True)
+                def_edu_val = row_preset.get("current_edu_status", current_student["current_edu_status"] or current_student["education_qualification"]).strip()
+                def_edu_idx = 0
+                if def_edu_val in ENROLLMENT_EDUCATION_OPTIONS:
+                    def_edu_idx = ENROLLMENT_EDUCATION_OPTIONS.index(def_edu_val)
+                f_edu_status = st.selectbox(
+                    "Current Educational Status",
+                    ENROLLMENT_EDUCATION_OPTIONS,
+                    index=def_edu_idx,
+                    label_visibility="collapsed",
+                    key=f"enr_sel_edu_{current_student['row_num']}"
+                )
+
+            with col_q9:
+                st.markdown('<div class="question-pill-header">10. Monthly Family Income (RS.)</div>', unsafe_allow_html=True)
+                f_income = st.text_input(
+                    "Monthly Family Income RS.",
+                    value=str(row_preset.get("monthly_income", current_student["monthly_income"])),
+                    placeholder="E.g. 15000, 20000, Below 10000...",
+                    label_visibility="collapsed",
+                    key=f"enr_txt_inc_{current_student['row_num']}"
+                )
+
+            with col_q10:
+                st.markdown('<div class="question-pill-header">11. Satisfied With Conversation?</div>', unsafe_allow_html=True)
+                def_sat_val = row_preset.get("satisfied_conversation", current_student["satisfied_conversation"]).strip()
+                def_sat_idx = 0
+                if def_sat_val in ENROLLMENT_SATISFIED_OPTIONS:
+                    def_sat_idx = ENROLLMENT_SATISFIED_OPTIONS.index(def_sat_val)
+                f_satisfied = st.selectbox(
+                    "Satisfied With Conversation",
+                    ENROLLMENT_SATISFIED_OPTIONS,
+                    index=def_sat_idx,
+                    label_visibility="collapsed",
+                    key=f"enr_sel_sat_{current_student['row_num']}"
+                )
+
+            st.markdown("<hr style='margin: 18px 0;'>", unsafe_allow_html=True)
+
+            # ----------------------------------------------------------------------
+            # Section 2: Employment & Career Interests
+            # ----------------------------------------------------------------------
+            st.markdown("""
+                <div style="font-weight: 800; color: #0f4c81; font-size: 1.08rem; margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
+                    <span>💼 Section 2: Employment & Career Interests</span>
+                </div>
+            """, unsafe_allow_html=True)
+
+            col_w1, col_w2 = st.columns(2)
+            with col_w1:
+                st.markdown('<div class="question-pill-header">12. Interest In Job?</div>', unsafe_allow_html=True)
+                def_ij_val = row_preset.get("interest_in_job", current_student["interest_in_job"])
+                def_ij_idx = get_tri_option_index(def_ij_val, default="Yes")
+                f_job_interest = st.radio(
+                    "Interest In Job",
+                    ENROLLMENT_TRI_STATE_OPTIONS,
+                    index=def_ij_idx,
+                    horizontal=True,
+                    label_visibility="collapsed",
+                    key=f"enr_rad_ij_{current_student['row_num']}"
+                )
+
+            with col_w2:
+                st.markdown('<div class="question-pill-header">13. Present Working Status (Currently Employed)?</div>', unsafe_allow_html=True)
+                def_ws_val = row_preset.get("present_working_status", current_student["present_working_status"]).strip().capitalize()
+                def_ws_idx = 0 if def_ws_val == "Yes" else 1
+                f_working_status = st.radio(
+                    "Present Working Status",
+                    ["Yes", "No"],
+                    index=def_ws_idx,
+                    horizontal=True,
+                    label_visibility="collapsed",
+                    key=f"enr_rad_ws_{current_student['row_num']}"
+                )
+
+            # Conditional fields if Student is working
+            if f_working_status == "Yes":
+                st.markdown("""
+                    <div style="background: #f0fdf4; border: 1.5px solid #86efac; border-left: 5px solid #16a34a; padding: 10px 14px; border-radius: 8px; margin: 10px 0; color: #166534; font-size: 0.92rem; font-weight: 700;">
+                        💼 Student is Currently Working — Please capture Employment & Job Details:
+                    </div>
+                """, unsafe_allow_html=True)
+
+                c_emp1, c_emp2, c_emp3 = st.columns(3)
+                with c_emp1:
+                    f_comp_name = st.text_input(
+                        "Company Name",
+                        value=row_preset.get("company_name", current_student["company_name"]),
+                        placeholder="E.g. TCS, Reliance, Retail...",
+                        key=f"enr_txt_comp_{current_student['row_num']}"
+                    )
+                with c_emp2:
+                    f_salary = st.text_input(
+                        "Salary (RS.)",
+                        value=str(row_preset.get("salary", current_student["salary"])),
+                        placeholder="E.g. 15000, 18000...",
+                        key=f"enr_txt_sal_{current_student['row_num']}"
+                    )
+                with c_emp3:
+                    def_pf_val = row_preset.get("part_full_time", current_student["part_full_time"]).strip().title()
+                    def_pf_idx = 0 if def_pf_val == "Full Time" else (1 if def_pf_val == "Part Time" else 0)
+                    f_part_full = st.selectbox(
+                        "Part Time / Full Time",
+                        ["Full Time", "Part Time"],
+                        index=def_pf_idx,
+                        key=f"enr_sel_pf_{current_student['row_num']}"
+                    )
+
+                c_emp4, c_emp5, c_emp6 = st.columns(3)
+                with c_emp4:
+                    def_hm_val = row_preset.get("how_many_months", current_student["how_many_months"]).strip()
+                    def_hm_idx = 2  # default 2 Months
+                    if def_hm_val in ENROLLMENT_MONTHS_OPTIONS:
+                        def_hm_idx = ENROLLMENT_MONTHS_OPTIONS.index(def_hm_val)
+                    f_months_work = st.selectbox(
+                        "How Many Months Working?",
+                        ENROLLMENT_MONTHS_OPTIONS,
+                        index=def_hm_idx,
+                        key=f"enr_sel_hm_{current_student['row_num']}"
+                    )
+                with c_emp5:
+                    def_lj_val = row_preset.get("left_job_after_joining", current_student["left_job_after_joining"]).strip().capitalize() or "No"
+                    def_lj_idx = 0 if def_lj_val == "Yes" else (1 if def_lj_val == "No" else 2)
+                    f_left_job = st.radio(
+                        "Did They Left Job After Joining Course?",
+                        ["Yes", "No", "N/A"],
+                        index=def_lj_idx,
+                        horizontal=True,
+                        key=f"enr_rad_lj_{current_student['row_num']}"
+                    )
+                with c_emp6:
+                    def_wj_val = row_preset.get("why_joined_course", current_student["why_joined_course"]).strip()
+                    def_wj_idx = 0
+                    if def_wj_val in ENROLLMENT_WHY_JOINED_OPTIONS:
+                        def_wj_idx = ENROLLMENT_WHY_JOINED_OPTIONS.index(def_wj_val)
+                    f_why_joined = st.selectbox(
+                        "Why They Joined Course, If Stu Working?",
+                        ENROLLMENT_WHY_JOINED_OPTIONS,
+                        index=def_wj_idx,
+                        key=f"enr_sel_wj_{current_student['row_num']}"
+                    )
+            else:
+                f_comp_name = ""
+                f_salary = ""
+                f_part_full = ""
+                f_months_work = ""
+                f_left_job = ""
+                f_why_joined = ""
+
+            st.markdown("<hr style='margin: 18px 0;'>", unsafe_allow_html=True)
+
+            # ----------------------------------------------------------------------
+            # Section 3: Final Disposition & Remarks
+            # ----------------------------------------------------------------------
+            st.markdown("""
+                <div style="font-weight: 800; color: #0f4c81; font-size: 1.08rem; margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
+                    <span>📋 Section 3: Final Disposition & Remarks</span>
+                </div>
+            """, unsafe_allow_html=True)
+
+            c_rem1, c_rem2 = st.columns([1.5, 1.0])
+            with c_rem1:
+                existing_er = row_preset.get("enroll_remarks", current_student["enroll_remarks"]).strip()
+                def_er_idx = 0
+                if existing_er in ENROLLMENT_REMARKS_YES_OPTIONS:
+                    def_er_idx = ENROLLMENT_REMARKS_YES_OPTIONS.index(existing_er)
+                f_enroll_remarks = st.selectbox(
+                    "Enroll Remarks (Final Disposition)",
+                    ENROLLMENT_REMARKS_YES_OPTIONS,
+                    index=def_er_idx,
+                    key=f"enr_sel_er_{current_student['row_num']}"
+                )
+            with c_rem2:
+                st.date_input(
+                    "Verification Date",
+                    value=date.today(),
+                    disabled=True,
+                    key=f"enr_date_vdate_{current_student['row_num']}"
+                )
+
+            c_rem3, c_rem4 = st.columns(2)
+            with c_rem3:
+                f_remarks_2 = st.text_input(
+                    "Remarks 2 (SPOC Notes)",
+                    value=row_preset.get("remarks_2", current_student["remarks_2"]),
+                    key=f"enr_txt_rem2_{current_student['row_num']}",
+                    placeholder="E.g. Verified with student, details confirmed..."
+                )
+            with c_rem4:
+                f_remarks_3 = st.text_input(
+                    "Remarks 3 (Supervisor / Center Notes)",
+                    value=row_preset.get("remarks_3", current_student["remarks_3"]),
+                    key=f"enr_txt_rem3_{current_student['row_num']}",
+                    placeholder="Optional supervisor notes..."
+                )
+
+            st.markdown("<br>", unsafe_allow_html=True)
+            btn_submit_label = f"💾 Update & Insert Enrollment Verification (Row #{current_student['row_num']})" if (is_edit_mode or is_already_verified) else "💾 Submit Enrollment Verification"
+            if st.button(btn_submit_label, type="primary", use_container_width=True, key=f"enr_btn_submit_{current_student['row_num']}"):
+                with st.spinner("⚡ High Speed Sync to Google Sheets..."):
+                    is_blank_exit = f_enroll_remarks in ENROLLMENT_CONTACTED_BLANK_REMARKS
+                    payload = [
+                        "Yes",                                           # R: Contactable
+                        "" if is_blank_exit else f_class_started,        # S: Class started (Yes/No)
+                        "" if is_blank_exit else f_got_info,             # T: Got information about Anudip
+                        "" if is_blank_exit else f_referral_ok,          # U: Referral Person Name(Yes/No)
+                        "" if is_blank_exit else (f_referral_name_fill.strip() if f_referral_ok == "Yes" else ""), # V: Please fill the Name
+                        "" if is_blank_exit else str(f_your_dob),        # W: Your_DOB
+                        "" if is_blank_exit else str(f_income).strip(),  # X: Monthly Family Income RS.
+                        "" if is_blank_exit else f_satisfied,            # Y: Satisfied With Conversation
+                        "" if is_blank_exit else f_classes_week,         # Z: Classes In A Week
+                        "" if is_blank_exit else f_class_mode,           # AA: Class Mode
+                        "" if is_blank_exit else f_quality,              # AB: Quality Of Classes
+                        "" if is_blank_exit else f_edu_status,           # AC: Current Educational Status
+                        str(date.today()),                               # AD: Verification Date
+                        "" if is_blank_exit else f_job_interest,         # AE: Interest In Job
+                        "" if is_blank_exit else f_working_status,       # AF: Present Working Status
+                        "" if is_blank_exit else (f_comp_name.strip() if f_working_status == "Yes" else ""), # AG: COMPANY NAME
+                        "" if is_blank_exit else (str(f_salary).strip() if f_working_status == "Yes" else ""), # AH: Salary
+                        "" if is_blank_exit else (f_part_full if f_working_status == "Yes" else ""),# AI: Part Time /Full Time
+                        "" if is_blank_exit else (f_months_work if f_working_status == "Yes" else ""), # AJ: How Many Months Working
+                        "" if is_blank_exit else (f_left_job if f_working_status == "Yes" else ""), # AK: Did They Left The Job After Joining Course
+                        "" if is_blank_exit else (f_why_joined if f_working_status == "Yes" else ""), # AL: Why They Joined Course, If Stu Working
+                        f_enroll_remarks,                                # AM: Enroll Remarks
+                        f_remarks_2.strip(),                             # AN: Remarks 2
+                        f_remarks_3.strip()                              # AO: Remarks 3
+                    ]
+
+                    try:
+                        if enrollment_ws:
+                            enrollment_ws.update(values=[payload], range_name=f"R{current_student['row_num']}:AO{current_student['row_num']}")
+                        update_local_enrollment_row(current_student['row_num'], payload)
+                        fetch_enrollment_master_data.clear()
+
+                        st.session_state.enrollment_live_history.insert(0, (current_student['row_num'], list(payload)))
+                        st.session_state.enrollment_live_history = st.session_state.enrollment_live_history[:25]
+                        st.session_state.pop("enrollment_editing_row", None)
+
+                        st.toast(f"✅ Target #{current_q_idx + 1} ({current_student['student_name']}) saved successfully in Google Sheets!", icon="🎯")
+
+                        if current_q_idx + 1 < total_assigned_queue:
+                            st.session_state.enrollment_queue_index = current_q_idx + 1
+                            next_s = active_queue_students[current_q_idx + 1]
+                            save_enrollment_progress(current_spoc, current_q_idx + 1, next_s["contact_number"], active_call_index=st.session_state.get("enrollment_active_call_index", 0))
+
+                        time.sleep(0.3)
+                        st.rerun()
+                    except Exception as ex:
+                        st.error(f"Error saving to Google Sheets: {ex}")
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -1942,6 +2078,8 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
                 with h_c3:
                     stat_txt = f"Contactable: {hist_payload[0]}"
                     if hist_payload[0] == "No":
+                        stat_txt += f" • {hist_payload[21]}"
+                    elif hist_payload[21] in ENROLLMENT_CONTACTED_BLANK_REMARKS:
                         stat_txt += f" • {hist_payload[21]}"
                     else:
                         stat_txt += f" • Working: {hist_payload[14]}"
@@ -1978,7 +2116,8 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
                             "enroll_remarks": hist_payload[21],
                             "remarks_2": hist_payload[22],
                             "remarks_3": hist_payload[23] if len(hist_payload) > 23 else "",
-                            "nocont_reason": hist_payload[21] if hist_payload[0] == "No" else ""
+                            "nocont_reason": hist_payload[21] if hist_payload[0] == "No" else "",
+                            "call_outcome": hist_payload[21] if hist_payload[0] == "Yes" and hist_payload[21] in ENROLLMENT_CONTACTED_BLANK_REMARKS else "Full Verification (Complete Survey)"
                         }
                         st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
