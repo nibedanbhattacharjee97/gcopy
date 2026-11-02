@@ -34,15 +34,15 @@ def main():
     print(f"Read {total_rows} rows from {CSV_FILE}")
 
     if not target_ws:
-        print(f"Creating new worksheet '{WORKSHEET_NAME}' with {max(total_rows + 50, 3800)} rows and 40 columns...")
-        target_ws = sh.add_worksheet(title=WORKSHEET_NAME, rows=max(total_rows + 50, 3800), cols=40)
+        print(f"Creating new worksheet '{WORKSHEET_NAME}' with {max(total_rows + 50, 3800)} rows and 41 columns...")
+        target_ws = sh.add_worksheet(title=WORKSHEET_NAME, rows=max(total_rows + 50, 3800), cols=41)
     else:
         # Resize worksheet if needed
         curr_r = target_ws.row_count
         curr_c = target_ws.col_count
-        if curr_r < total_rows + 10 or curr_c < 40:
-            print(f"Resizing worksheet from ({curr_r}, {curr_c}) to ({max(curr_r, total_rows + 50)}, {max(curr_c, 40)})...")
-            target_ws.resize(rows=max(curr_r, total_rows + 50), cols=max(curr_c, 40))
+        if curr_r < total_rows + 10 or curr_c < 41:
+            print(f"Resizing worksheet from ({curr_r}, {curr_c}) to ({max(curr_r, total_rows + 50)}, {max(curr_c, 41)})...")
+            target_ws.resize(rows=max(curr_r, total_rows + 50), cols=max(curr_c, 41))
 
     # Upload in chunks of 500 rows to ensure fast and reliable upload
     CHUNK_SIZE = 500
@@ -51,20 +51,20 @@ def main():
         chunk = all_rows[start_idx:end_idx]
         start_row = start_idx + 1
         end_row = end_idx
-        range_name = f"A{start_row}:AN{end_row}"
+        range_name = f"A{start_row}:AO{end_row}"
         print(f"Uploading rows {start_row} to {end_row} ({range_name})...")
         target_ws.update(values=chunk, range_name=range_name)
         time.sleep(0.5)
 
     print("Data upload complete! Applying header styling (Blue for static info, Yellow for verification)...")
     try:
-        # Format headers: A1:Q1 Blue (#00B0F0), R1:AN1 Yellow (#FFFF00)
+        # Format headers: A1:Q1 Blue (#00B0F0), R1:AO1 Yellow (#FFFF00)
         target_ws.format("A1:Q1", {
             "backgroundColor": {"red": 0.0, "green": 0.69, "blue": 0.94},
             "textFormat": {"bold": True, "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}},
             "horizontalAlignment": "CENTER"
         })
-        target_ws.format("R1:AN1", {
+        target_ws.format("R1:AO1", {
             "backgroundColor": {"red": 1.0, "green": 1.0, "blue": 0.0},
             "textFormat": {"bold": True, "foregroundColor": {"red": 0.0, "green": 0.0, "blue": 0.0}},
             "horizontalAlignment": "CENTER"
