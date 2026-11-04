@@ -1867,10 +1867,10 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
             with col_w2:
                 st.markdown('<div class="question-pill-header">13. Present Working Status (Currently Employed)?</div>', unsafe_allow_html=True)
                 def_ws_val = row_preset.get("present_working_status", current_student["present_working_status"]).strip().capitalize()
-                def_ws_idx = 0 if def_ws_val == "Yes" else 1
+                def_ws_idx = 0 if def_ws_val == "Yes" else (1 if def_ws_val == "No" else 2)
                 f_working_status = st.radio(
                     "Present Working Status",
-                    ["Yes", "No"],
+                    ["Yes", "No", "dont share"],
                     index=def_ws_idx,
                     horizontal=True,
                     label_visibility="collapsed",
