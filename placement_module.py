@@ -1001,10 +1001,10 @@ def render_placement_sidebar_download(all_placement_students, current_spoc, is_a
         </div>
     """, unsafe_allow_html=True)
 
-    # Quick action for SPOC to mark all their calls as Finished ('Done')
+    # Quick action for SPOC to mark calls as Done for the selected Call ID scope
     if prog_cnt > 0 and len(filtered_spoc_records) > 0:
-        btn_cid_label = f" ({sel_call_id})" if sel_call_id != "All Call IDs" else ""
-        if st.sidebar.button(f"🏁 ALL CALLS DONE{btn_cid_label}", type="primary", key=f"sb_plc_all_done_{safe_name}_{sel_call_id}", use_container_width=True, help="Update Call_Status to Done for all your calls in this batch"):
+        btn_label = f"🏁 Mark '{sel_call_id}' as DONE ({prog_cnt})" if sel_call_id != "All Call IDs" else f"🏁 Mark ALL as DONE ({prog_cnt})"
+        if st.sidebar.button(btn_label, type="primary", key=f"sb_plc_all_done_{safe_name}_{sel_call_id}", use_container_width=True, help="Update Call_Status to Done for all your calls in this batch"):
             updates_map = {}
             batch_updates = []
             for s in filtered_spoc_records:
@@ -1020,19 +1020,20 @@ def render_placement_sidebar_download(all_placement_students, current_spoc, is_a
             # 2. Async background sync to Google Sheet (Zero UI wait)
             if placement_ws and batch_updates:
                 _PLACEMENT_BG_EXECUTOR.submit(placement_ws.batch_update, batch_updates)
-            st.toast(f"🎉 All calls for {safe_name}{btn_cid_label} marked as 'Done' in Google Sheet!", icon="✅")
+            st.toast(f"🎉 Calls for {safe_name} ({sel_call_id}) marked as 'Done' in Google Sheet!", icon="✅")
             time.sleep(0.2)
             st.rerun()
 
     # 1. Download 'Call Done' Data (Completed Calls)
+    file_cid_suffix = f"_{sel_call_id}" if sel_call_id != "All Call IDs" else ""
     done_csv = build_placement_csv(done_students, live_history, headers=sheet_headers)
     st.sidebar.download_button(
         label=f"✅ Download 'Call Done' Data ({done_cnt})",
         data=done_csv,
-        file_name=f"Placement_CallDone_Data_{safe_name}_{now_str}.csv",
+        file_name=f"Placement_CallDone_Data_{safe_name}{file_cid_suffix}_{now_str}.csv",
         mime="text/csv",
         use_container_width=True,
-        key=f"sb_dl_plc_done_{safe_name}"
+        key=f"sb_dl_plc_done_{safe_name}_{sel_call_id}"
     )
 
     # 2. Download 'In Progress' Data (For reassigning if SPOC left)
@@ -1040,10 +1041,10 @@ def render_placement_sidebar_download(all_placement_students, current_spoc, is_a
     st.sidebar.download_button(
         label=f"⏳ Download 'In Progress' Data ({prog_cnt})",
         data=prog_csv,
-        file_name=f"Placement_InProgress_Data_{safe_name}_{now_str}.csv",
+        file_name=f"Placement_InProgress_Data_{safe_name}{file_cid_suffix}_{now_str}.csv",
         mime="text/csv",
         use_container_width=True,
-        key=f"sb_dl_plc_prog_{safe_name}"
+        key=f"sb_dl_plc_prog_{safe_name}_{sel_call_id}"
     )
 
     # 3. Yes Data Download Button
@@ -1051,10 +1052,10 @@ def render_placement_sidebar_download(all_placement_students, current_spoc, is_a
     st.sidebar.download_button(
         label=f"🟢 Download 'Yes' Data ({yes_cnt})",
         data=yes_csv,
-        file_name=f"Placement_Yes_Data_{safe_name}_{now_str}.csv",
+        file_name=f"Placement_Yes_Data_{safe_name}{file_cid_suffix}_{now_str}.csv",
         mime="text/csv",
         use_container_width=True,
-        key=f"sb_dl_plc_yes_{safe_name}"
+        key=f"sb_dl_plc_yes_{safe_name}_{sel_call_id}"
     )
 
     # 4. No Data Download Button
@@ -1062,10 +1063,10 @@ def render_placement_sidebar_download(all_placement_students, current_spoc, is_a
     st.sidebar.download_button(
         label=f"🔴 Download 'No' Data ({no_cnt})",
         data=no_csv,
-        file_name=f"Placement_No_Data_{safe_name}_{now_str}.csv",
+        file_name=f"Placement_No_Data_{safe_name}{file_cid_suffix}_{now_str}.csv",
         mime="text/csv",
         use_container_width=True,
-        key=f"sb_dl_plc_no_{safe_name}"
+        key=f"sb_dl_plc_no_{safe_name}_{sel_call_id}"
     )
 
     # 5. Total Data Download Button
@@ -1951,63 +1952,112 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
     # 🎯 CALLING TARGET BANNER WITH 1-CLICK COPY PHONE NUMBER (EXACT PICTURE MATCH)
     # ==========================================================================
     # ==========================================================================
-    # 🏁 HIGH SPEED "ALL CALLS DONE" FINALIZE ACTION FOR EACH RESPECTIVE SPOC
+    # 🏁 HIGH SPEED PER-CALL-ID BATCH COMPLETION CENTER FOR EACH SPOC
     # ==========================================================================
-    total_spoc_calls = len(active_queue_students)
-    done_spoc_calls = sum(1 for s in active_queue_students if s.get("call_status") == "Done")
-    prog_spoc_calls = total_spoc_calls - done_spoc_calls
+    spoc_all_students = [s for s in all_placement_students if s["called_by"].strip().lower() == current_spoc.strip().lower()]
+    if not spoc_all_students:
+        spoc_all_students = active_queue_students
 
-    if prog_spoc_calls > 0:
-        st.markdown(f"""
-            <div style="background: #ffffff; border: 2.2px solid #0284c7; border-radius: 10px; padding: 12px 16px; margin-bottom: 12px; box-shadow: 0 2px 10px rgba(2, 132, 199, 0.12);">
-                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
-                    <div>
-                        <span style="color: #0369a1; font-size: 1.05rem; font-weight: 800;">📞 Calling Scope: {current_spoc.title()}</span>
-                        <div style="color: #475569; font-size: 0.86rem; margin-top: 3px;">
-                            ✅ Done: <b style="color: #16a34a;">{done_spoc_calls}</b> &nbsp;|&nbsp; ⏳ In Progress: <b style="color: #ea580c;">{prog_spoc_calls}</b> &nbsp;|&nbsp; 📊 Total Allocated: <b>{total_spoc_calls}</b>
+    spoc_cids = sorted(list({str(s.get("call_id", "")).strip() for s in spoc_all_students if str(s.get("call_id", "")).strip()}))
+    for def_cid in ["1000", "1153"]:
+        if def_cid not in spoc_cids and any(str(s.get("call_id", "")).strip() == def_cid for s in all_placement_students):
+            spoc_cids.append(def_cid)
+    spoc_cids = sorted(spoc_cids)
+    if not spoc_cids:
+        spoc_cids = ["1000", "1153"]
+
+    total_spoc_calls = len(spoc_all_students)
+    total_done_calls = sum(1 for s in spoc_all_students if s.get("call_status") == "Done")
+    total_prog_calls = total_spoc_calls - total_done_calls
+
+    st.markdown(f"""
+        <div style="background: #ffffff; border: 2.2px solid #0284c7; border-radius: 10px; padding: 12px 16px; margin-bottom: 12px; box-shadow: 0 2px 10px rgba(2, 132, 199, 0.12);">
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                <div>
+                    <span style="color: #0369a1; font-size: 1.05rem; font-weight: 800;">📞 Calling Scope: {current_spoc.title()}</span>
+                    <div style="color: #475569; font-size: 0.86rem; margin-top: 3px;">
+                        ✅ Done: <b style="color: #16a34a;">{total_done_calls}</b> &nbsp;|&nbsp; ⏳ In Progress: <b style="color: #ea580c;">{total_prog_calls}</b> &nbsp;|&nbsp; 📊 Total Allocated: <b>{total_spoc_calls}</b>
+                    </div>
+                </div>
+                <div style="color: #0f172a; font-size: 0.84rem; background: #f0f9ff; border: 1px solid #bae6fd; padding: 6px 12px; border-radius: 6px; font-weight: 600;">
+                    💡 Mark each Call ID as <b>DONE</b> independently as you finish calling that batch!
+                </div>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # Render dedicated completion card for each Call ID
+    for cid in spoc_cids:
+        cid_students = [s for s in spoc_all_students if str(s.get("call_id", "")).strip() == cid]
+        if not cid_students:
+            continue
+        c_tot = len(cid_students)
+        c_done = sum(1 for s in cid_students if s.get("call_status") == "Done")
+        c_prog = c_tot - c_done
+
+        if c_prog > 0:
+            col_b_info, col_b_act = st.columns([3.2, 2.3])
+            with col_b_info:
+                st.markdown(f"""
+                    <div style="background: #f8fafc; border: 1.5px solid #cbd5e1; border-left: 5px solid #0284c7; border-radius: 8px; padding: 9px 14px; margin-bottom: 8px;">
+                        <span style="font-weight: 800; color: #0f172a; font-size: 0.95rem;">🏷️ Batch Call ID: <b style="color: #0284c7;">{cid}</b></span>
+                        <div style="display: flex; gap: 12px; font-size: 0.84rem; margin-top: 3px; font-weight: 700;">
+                            <span style="color: #15803d;">✅ Done: {c_done}</span>
+                            <span style="color: #ea580c;">⏳ In Progress: {c_prog}</span>
+                            <span style="color: #1e40af;">📊 Total: {c_tot}</span>
                         </div>
                     </div>
-                    <div style="color: #0f172a; font-size: 0.84rem; background: #f0f9ff; border: 1px solid #bae6fd; padding: 6px 12px; border-radius: 6px; font-weight: 600;">
-                        💡 After calling your students, click <b>ALL CALLS DONE</b> below to mark all your student calls as Done in Google Sheet.
+                """, unsafe_allow_html=True)
+            with col_b_act:
+                if st.button(f"🏁 Mark {cid} as DONE ({c_tot} calls)", type="primary", key=f"plc_main_done_cid_{current_spoc}_{cid}", use_container_width=True, help=f"Marks ONLY the {c_tot} calls for Call ID {cid} as Done in Google Sheet"):
+                    updates_map = {}
+                    batch_updates = []
+                    for s in cid_students:
+                        s["call_status"] = "Done"
+                        p_cid = s.get("call_id") or ("1153" if s["row_num"] <= 1154 else "1000")
+                        updates_map[s["row_num"]] = ([], "Done", p_cid)
+                        batch_updates.append({
+                            'range': f'AH{s["row_num"]}:AI{s["row_num"]}',
+                            'values': [['Done', p_cid]]
+                        })
+                    # 1. Instant sub-millisecond local update
+                    batch_update_in_memory_placement_rows(updates_map)
+                    # 2. Async background sync to Google Sheet (Zero UI wait)
+                    if placement_ws and batch_updates:
+                        _PLACEMENT_BG_EXECUTOR.submit(placement_ws.batch_update, batch_updates)
+                    st.toast(f"🎉 Success! All {c_tot} calls for Call ID {cid} are now marked as 'Done' in Google Sheet!", icon="✅")
+                    time.sleep(0.2)
+                    st.rerun()
+        else:
+            col_b_done, col_b_reopen = st.columns([3.8, 1.7])
+            with col_b_done:
+                st.markdown(f"""
+                    <div style="background: linear-gradient(135deg, #dcfce7, #f0fdf4); border: 1.5px solid #86efac; border-left: 5px solid #16a34a; border-radius: 8px; padding: 9px 14px; margin-bottom: 8px;">
+                        <span style="font-weight: 800; color: #15803d; font-size: 0.95rem;">🎉 Call ID: {cid} Finished! ({c_tot}/{c_tot} Calls Done)</span>
+                        <div style="color: #166534; font-size: 0.82rem; margin-top: 2px;">
+                            All {c_tot} allocated student records in batch <b>{cid}</b> are marked as <b>Call_Status: Done</b> in Google Sheet.
+                        </div>
                     </div>
-                </div>
-            </div>
-        """, unsafe_allow_html=True)
-
-        c_done_btn, c_done_help = st.columns([2.5, 3.5])
-        with c_done_btn:
-            btn_cid_suffix = f" ({sel_q_cid})" if 'sel_q_cid' in locals() and sel_q_cid != "All Call IDs" else ""
-            if st.button(f"🏁 ALL CALLS DONE{btn_cid_suffix} — Finalize in Google Sheet", type="primary", use_container_width=True, key=f"plc_main_done_{current_spoc}", help="Click when you have called your students. Instantly sets Call_Status = Done in Google Sheet for all your calls"):
-                updates_map = {}
-                batch_updates = []
-                for s in active_queue_students:
-                    s["call_status"] = "Done"
-                    p_cid = s.get("call_id") or ("1153" if s["row_num"] <= 1154 else "1000")
-                    updates_map[s["row_num"]] = ([], "Done", p_cid)
-                    batch_updates.append({
-                        'range': f'AH{s["row_num"]}:AI{s["row_num"]}',
-                        'values': [['Done', p_cid]]
-                    })
-                # 1. Instant sub-millisecond local update
-                batch_update_in_memory_placement_rows(updates_map)
-                # 2. Async background sync to Google Sheet (Zero UI wait)
-                if placement_ws and batch_updates:
-                    _PLACEMENT_BG_EXECUTOR.submit(placement_ws.batch_update, batch_updates)
-                st.balloons()
-                st.toast(f"🎉 Success! All {total_spoc_calls} calls for {current_spoc.title()} are now marked as 'Done' in Google Sheet!", icon="✅")
-                time.sleep(0.2)
-                st.rerun()
-        with c_done_help:
-            st.caption("⚡ **One-Click Sync**: Updates all student rows allocated to you to **`Call_Status: Done`** in Google Sheet and updates your downloadable SPOC reports.")
-    else:
-        st.markdown(f"""
-            <div style="background: linear-gradient(135deg, #dcfce7, #f0fdf4); border: 2.2px solid #22c55e; border-radius: 10px; padding: 12px 18px; margin-bottom: 12px; text-align: center; box-shadow: 0 2px 8px rgba(34, 197, 94, 0.15);">
-                <span style="font-size: 1.15rem; font-weight: 800; color: #15803d;">🎉 All Respective Calls Finished for {current_spoc.title()}!</span>
-                <div style="font-size: 0.88rem; color: #166534; margin-top: 4px;">
-                    All <b>{total_spoc_calls}</b> allocated student records are marked as <b>Call_Status: Done</b> in Google Sheet. You can download the completed data from the sidebar.
-                </div>
-            </div>
-        """, unsafe_allow_html=True)
+                """, unsafe_allow_html=True)
+            with col_b_reopen:
+                if st.button(f"↩️ Reopen {cid}", key=f"plc_reopen_cid_{current_spoc}_{cid}", use_container_width=True, help=f"Reopen batch {cid} back to Progress if needed"):
+                    updates_map = {}
+                    batch_updates = []
+                    for s in cid_students:
+                        is_verified = (s.get("contactable", "").strip().lower() in ["yes", "no"]) or bool(s.get("verification_date", "").strip())
+                        new_st = "Done" if is_verified else "Progress"
+                        s["call_status"] = new_st
+                        updates_map[s["row_num"]] = ([], new_st, cid)
+                        batch_updates.append({
+                            'range': f'AH{s["row_num"]}:AI{s["row_num"]}',
+                            'values': [[new_st, cid]]
+                        })
+                    batch_update_in_memory_placement_rows(updates_map)
+                    if placement_ws and batch_updates:
+                        _PLACEMENT_BG_EXECUTOR.submit(placement_ws.batch_update, batch_updates)
+                    st.toast(f"Batch {cid} reopened to Progress!", icon="🔄")
+                    time.sleep(0.2)
+                    st.rerun()
 
     prog_pct = min((current_q_idx + 1) / total_assigned_queue, 1.0) if total_assigned_queue > 0 else 0
     st.progress(prog_pct)

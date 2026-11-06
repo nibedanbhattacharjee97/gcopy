@@ -17,6 +17,12 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", message=".*st\\.components\\.v1\\.html.*")
 warnings.filterwarnings("ignore", message=".*st\\.iframe.*")
 
+import importlib
+import placement_module
+import enrollment_module
+importlib.reload(placement_module)
+importlib.reload(enrollment_module)
+
 from placement_module import (
     render_placement_dashboard,
     fetch_placement_master_data,
