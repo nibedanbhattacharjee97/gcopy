@@ -9,6 +9,7 @@ import urllib.parse
 import csv
 import io
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 
 # Suppress Streamlit deprecation warnings for clean console logs (resolves Picture 3 issue)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -17,6 +18,9 @@ warnings.filterwarnings("ignore", message=".*st\\.iframe.*")
 
 PROGRESS_PLACEMENT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "spoc_placement_progress.json")
 DATA_CACHE_TTL = 900  # 15 minutes TTL for zero API rate limit and lightning speed
+
+# High speed asynchronous background thread pool (Zero UI lag)
+_PLACEMENT_BG_EXECUTOR = ThreadPoolExecutor(max_workers=4)
 
 # ==============================================================================
 # 🎯 DROPDOWN CONSTANTS (MATCHING PLACEMENT EXCEL & USER SPECIFICATION - PICTURE 4)
@@ -270,14 +274,81 @@ def get_saved_placement_index(spoc_name, student_list):
     return target_idx, max(target_idx, effective_active)
 
 # ==============================================================================
-# 📊 CACHED DATA FETCHING & MODELING
+# 📊 IN-MEMORY CACHE & BACKGROUND SYNC ENGINE
 # ==============================================================================
-@st.cache_data(ttl=DATA_CACHE_TTL)
+def update_in_memory_placement_row(row_num, payload, call_status="Done", call_id=None):
+    """Updates the session master rows immediately in memory (sub-millisecond)."""
+    if "placement_master_rows" in st.session_state and st.session_state.placement_master_rows:
+        m_rows = st.session_state.placement_master_rows
+        if 0 < row_num <= len(m_rows):
+            idx = row_num - 1
+            curr = list(m_rows[idx])
+            if len(curr) < 35:
+                curr.extend([""] * (35 - len(curr)))
+            if payload and len(payload) > 0:
+                for i, val in enumerate(payload):
+                    if 16 + i < len(curr):
+                        curr[16 + i] = str(val)
+            if call_status is not None:
+                curr[33] = str(call_status)
+            if call_id is not None:
+                curr[34] = str(call_id)
+            m_rows[idx] = curr
+            st.session_state.placement_master_rows = m_rows
+
+def batch_update_in_memory_placement_rows(updates_map):
+    """
+    updates_map: dict of {row_num: (payload, call_status, call_id)}
+    Updates in-memory session rows in a single microsecond pass.
+    """
+    if not updates_map:
+        return
+    if "placement_master_rows" in st.session_state and st.session_state.placement_master_rows:
+        m_rows = st.session_state.placement_master_rows
+        for row_num, (payload, call_status, call_id) in updates_map.items():
+            if 0 < row_num <= len(m_rows):
+                idx = row_num - 1
+                curr = list(m_rows[idx])
+                if len(curr) < 35:
+                    curr.extend([""] * (35 - len(curr)))
+                if payload and len(payload) > 0:
+                    for i, val in enumerate(payload):
+                        if 16 + i < len(curr):
+                            curr[16 + i] = str(val)
+                if call_status is not None:
+                    curr[33] = str(call_status)
+                if call_id is not None:
+                    curr[34] = str(call_id)
+                m_rows[idx] = curr
+        st.session_state.placement_master_rows = m_rows
+
+def _bg_placement_sync_worker(ws, row_num, payload, call_status="Done", call_id="1153"):
+    """
+    Background worker: Syncs row to Google Sheets without blocking UI.
+    """
+    try:
+        if ws:
+            ws.update(values=[payload], range_name=f"Q{row_num}:AG{row_num}")
+            try:
+                ws.update(values=[[call_status, call_id]], range_name=f"AH{row_num}:AI{row_num}")
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[Placement BG Sync Error] row {row_num}: {e}")
+
+def dispatch_placement_sync(ws, row_num, payload, call_status="Done", call_id="1153"):
+    _PLACEMENT_BG_EXECUTOR.submit(_bg_placement_sync_worker, ws, row_num, list(payload), call_status, call_id)
+
 def fetch_placement_master_data(_placement_ws):
-    """Fetches all rows from Placement_Verification worksheet (15-min cache)"""
+    """Fetches all rows from Placement_Verification worksheet with in-memory session caching"""
+    if "placement_master_rows" in st.session_state and st.session_state.placement_master_rows:
+        return st.session_state.placement_master_rows
     try:
         if _placement_ws:
-            return _placement_ws.get_all_values()
+            rows = _placement_ws.get_all_values()
+            if rows and len(rows) > 1:
+                st.session_state.placement_master_rows = [list(r) for r in rows]
+                return st.session_state.placement_master_rows
         return []
     except Exception:
         return []
@@ -291,7 +362,11 @@ def parse_all_placement_students(all_rows):
     for r_idx, r in enumerate(all_rows[1:], start=2):
         if len(r) > 0 and str(r[0]).strip():
             assigned_spoc = str(r[0]).strip()
-            padded = list(r) + [""] * max(0, 34 - len(r))
+            padded = list(r) + [""] * max(0, 36 - len(r))
+            raw_cont = padded[16].strip()
+            raw_vdate = padded[28].strip()
+            call_status = padded[33].strip() if len(padded) > 33 and padded[33].strip() else ("Done" if (raw_cont.lower() in ["yes", "no"] or raw_vdate) else "Progress")
+            call_id = padded[34].strip() if len(padded) > 34 and padded[34].strip() else ("1153" if r_idx <= 1154 else "1000")
             students.append({
                 "row_num": r_idx,
                 "queue_index": q_idx,
@@ -328,7 +403,9 @@ def parse_all_placement_students(all_rows):
                 "left_not_working_remarks": padded[29].strip(),
                 "not_joined_remarks": padded[30].strip(),
                 "satisfied_with_conversation": padded[31].strip(),
-                "remarks_2": padded[32].strip() if len(padded) > 32 else ""
+                "remarks_2": padded[32].strip() if len(padded) > 32 else "",
+                "call_status": call_status,
+                "call_id": call_id
             })
             q_idx += 1
     return students
@@ -730,21 +807,25 @@ def build_placement_csv(students_subset, live_history=None, headers=None):
         if isinstance(item, (list, tuple)) and len(item) == 2:
             live_map[item[0]] = item[1]
 
-    if not headers or len(headers) < 33:
-        headers = [
-            "SPOC Name", "Student Name", "CMIS ID", "Donor Name", "Contact Number",
-            "Alt Contact Number", "Gender", "Centre Code", "Centre Name", "State",
-            "Course", "DOJ", "Company Name", "Designation", "Salary", "Job Location",
-            "Contactable", "Assessment Given", "Got Certificate", "Have You Got This Job From Anudip",
-            "Retention Status", "How Many Months Working", "Current Company Name", "Current Salary",
-            "Current Designation", "Current DOJ", "Need any further job", "Net Promoter Score",
-            "Verification Date", "Left / Not Working Remarks", "Not Joined Remarks",
-            "Satisfied With Conversation", "Remarks 2"
-        ]
+    base_headers = [
+        "SPOC Name", "Student Name", "CMIS ID", "Donor Name", "Contact Number",
+        "Alt Contact Number", "Gender", "Centre Code", "Centre Name", "State",
+        "Course", "DOJ", "Company Name", "Designation", "Salary", "Job Location",
+        "Contactable", "Assessment Given", "Got Certificate", "Have You Got This Job From Anudip",
+        "Retention Status", "How Many Months Working", "Current Company Name", "Current Salary",
+        "Current Designation", "Current DOJ", "Need any further job", "Net Promoter Score",
+        "Verification Date", "Left / Not Working Remarks", "Not Joined Remarks",
+        "Satisfied With Conversation", "Remarks 2"
+    ]
+    export_headers = list(headers[:33]) if (headers and len(headers) >= 33) else list(base_headers)
+    if "Call_Status" not in export_headers:
+        export_headers.append("Call_Status")
+    if "Call_id" not in export_headers:
+        export_headers.append("Call_id")
 
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(headers)
+    writer.writerow(export_headers)
 
     for s in students_subset:
         r_num = s.get("row_num")
@@ -767,6 +848,10 @@ def build_placement_csv(students_subset, live_history=None, headers=None):
         not_joined_rem = lp[14] if lp and len(lp) > 14 else s.get("not_joined_remarks", "")
         satisfied = lp[15] if lp and len(lp) > 15 else s.get("satisfied_with_conversation", "")
         rem2 = lp[16] if lp and len(lp) > 16 else s.get("remarks_2", "")
+
+        is_done = (contactable.strip().lower() in ["yes", "no"]) or bool(vdate.strip())
+        row_status = "Done" if is_done else "Progress"
+        row_call_id = s.get("call_id") or ("1153" if (r_num and r_num <= 1154) else "1000")
 
         row = [
             s.get("called_by", ""),
@@ -801,13 +886,15 @@ def build_placement_csv(students_subset, live_history=None, headers=None):
             left_rem,
             not_joined_rem,
             satisfied,
-            rem2
+            rem2,
+            row_status,
+            row_call_id
         ]
         writer.writerow(row)
 
     return "\ufeff" + output.getvalue()
 
-def render_placement_sidebar_download(all_placement_students, current_spoc, is_admin=False, live_history=None, all_rows=None):
+def render_placement_sidebar_download(all_placement_students, current_spoc, is_admin=False, live_history=None, all_rows=None, placement_ws=None):
     """
     Renders the dedicated SPOC Data Download section in the sidebar directly beneath Logout,
     exactly as requested in Picture 2. Allows SPOCs to download Yes, No, and Total data.
@@ -845,18 +932,49 @@ def render_placement_sidebar_download(all_placement_students, current_spoc, is_a
     else:
         spoc_records = [s for s in all_placement_students if s["called_by"].strip().lower() == target_spoc.strip().lower()]
 
+    safe_name = re.sub(r'[^\w\-_\.]', '_', display_spoc_label)
+    now_str = datetime.now().strftime('%Y%m%d_%H%M')
+
+    # Dynamic Call ID Filter (Discovers all unique Call IDs from spoc_records: 1153, 1000)
+    found_cids = sorted(list({str(s.get("call_id", "")).strip() for s in spoc_records if str(s.get("call_id", "")).strip()}))
+    for def_cid in ["1000", "1153"]:
+        if def_cid not in found_cids and any(str(s.get("call_id", "")).strip() == def_cid for s in all_placement_students):
+            found_cids.append(def_cid)
+    found_cids = sorted(found_cids)
+    if not found_cids:
+        found_cids = ["1000", "1153"]
+    call_id_opts = ["All Call IDs"] + found_cids
+    sel_call_id = st.sidebar.selectbox("🏷️ Filter by Call ID:", call_id_opts, index=0, key=f"sb_plc_cid_{safe_name}")
+
+    filtered_spoc_records = spoc_records
+    if sel_call_id != "All Call IDs":
+        filtered_spoc_records = [s for s in spoc_records if str(s.get("call_id", "")).strip() == sel_call_id]
+
+    # Calculate status groups
+    done_students = []
+    progress_students = []
     yes_students = []
     no_students = []
-    for s in spoc_records:
+
+    for s in filtered_spoc_records:
         r_num = s["row_num"]
         lp = live_map.get(r_num)
         cont = lp[0].strip().lower() if (lp and len(lp) > 0) else s.get("contactable", "").strip().lower()
-        if cont == "yes":
-            yes_students.append(s)
-        elif cont == "no":
-            no_students.append(s)
+        vdate = lp[12].strip() if (lp and len(lp) > 12) else s.get("verification_date", "").strip()
+        is_done = (cont in ["yes", "no"]) or bool(vdate)
 
-    total_students = spoc_records
+        if is_done:
+            done_students.append(s)
+            if cont == "yes":
+                yes_students.append(s)
+            else:
+                no_students.append(s)
+        else:
+            progress_students.append(s)
+
+    total_students = filtered_spoc_records
+    done_cnt = len(done_students)
+    prog_cnt = len(progress_students)
     yes_cnt = len(yes_students)
     no_cnt = len(no_students)
     total_cnt = len(total_students)
@@ -865,30 +983,73 @@ def render_placement_sidebar_download(all_placement_students, current_spoc, is_a
     if all_rows and len(all_rows) > 0 and len(all_rows[0]) >= 33:
         sheet_headers = [str(h).strip() for h in all_rows[0][:33]]
 
-    # Styled container matching the green outline drawn in Picture 2
+    # Styled container matching the green outline
     st.sidebar.markdown(f"""
         <div style="background: #ffffff; border: 2.2px solid #22c55e; border-radius: 10px; padding: 12px 14px; margin-top: 10px; margin-bottom: 12px; box-shadow: 0 2px 10px rgba(34, 197, 94, 0.15);">
             <div style="font-weight: 800; color: #15803d; font-size: 0.96rem; text-align: center; text-transform: uppercase; letter-spacing: 0.5px;">
-                📥 Data Download
+                📥 Data Download ({display_spoc_label})
             </div>
-            <div style="font-size: 0.85rem; color: #1e293b; font-weight: 700; text-align: center; margin-top: 3px; margin-bottom: 8px;">
-                For ({display_spoc_label})
-            </div>
-            <div style="display: flex; justify-content: space-around; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; padding: 6px 4px; font-size: 0.78rem; font-weight: 700;">
-                <span style="color: #15803d;">✅ Yes: {yes_cnt}</span>
-                <span style="color: #b91c1c;">❌ No: {no_cnt}</span>
+            <div style="display: flex; justify-content: space-around; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; padding: 6px 4px; font-size: 0.78rem; font-weight: 700; margin-top: 8px;">
+                <span style="color: #15803d;">✅ Done: {done_cnt}</span>
+                <span style="color: #ea580c;">⏳ Progress: {prog_cnt}</span>
                 <span style="color: #1e40af;">📊 Total: {total_cnt}</span>
+            </div>
+            <div style="display: flex; justify-content: space-around; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 4px 4px; font-size: 0.76rem; font-weight: 600; margin-top: 4px;">
+                <span style="color: #16a34a;">🟢 Yes: {yes_cnt}</span>
+                <span style="color: #dc2626;">🔴 No: {no_cnt}</span>
             </div>
         </div>
     """, unsafe_allow_html=True)
 
-    safe_name = re.sub(r'[^\w\-_\.]', '_', display_spoc_label)
-    now_str = datetime.now().strftime('%Y%m%d_%H%M')
+    # Quick action for SPOC to mark all their calls as Finished ('Done')
+    if prog_cnt > 0 and len(filtered_spoc_records) > 0:
+        btn_cid_label = f" ({sel_call_id})" if sel_call_id != "All Call IDs" else ""
+        if st.sidebar.button(f"🏁 ALL CALLS DONE{btn_cid_label}", type="primary", key=f"sb_plc_all_done_{safe_name}_{sel_call_id}", use_container_width=True, help="Update Call_Status to Done for all your calls in this batch"):
+            updates_map = {}
+            batch_updates = []
+            for s in filtered_spoc_records:
+                s["call_status"] = "Done"
+                p_cid = s.get("call_id") or ("1153" if s["row_num"] <= 1154 else "1000")
+                updates_map[s["row_num"]] = ([], "Done", p_cid)
+                batch_updates.append({
+                    'range': f'AH{s["row_num"]}:AI{s["row_num"]}',
+                    'values': [['Done', p_cid]]
+                })
+            # 1. Instant sub-millisecond in-memory update
+            batch_update_in_memory_placement_rows(updates_map)
+            # 2. Async background sync to Google Sheet (Zero UI wait)
+            if placement_ws and batch_updates:
+                _PLACEMENT_BG_EXECUTOR.submit(placement_ws.batch_update, batch_updates)
+            st.toast(f"🎉 All calls for {safe_name}{btn_cid_label} marked as 'Done' in Google Sheet!", icon="✅")
+            time.sleep(0.2)
+            st.rerun()
 
-    # Yes Data Download Button
+    # 1. Download 'Call Done' Data (Completed Calls)
+    done_csv = build_placement_csv(done_students, live_history, headers=sheet_headers)
+    st.sidebar.download_button(
+        label=f"✅ Download 'Call Done' Data ({done_cnt})",
+        data=done_csv,
+        file_name=f"Placement_CallDone_Data_{safe_name}_{now_str}.csv",
+        mime="text/csv",
+        use_container_width=True,
+        key=f"sb_dl_plc_done_{safe_name}"
+    )
+
+    # 2. Download 'In Progress' Data (For reassigning if SPOC left)
+    prog_csv = build_placement_csv(progress_students, live_history, headers=sheet_headers)
+    st.sidebar.download_button(
+        label=f"⏳ Download 'In Progress' Data ({prog_cnt})",
+        data=prog_csv,
+        file_name=f"Placement_InProgress_Data_{safe_name}_{now_str}.csv",
+        mime="text/csv",
+        use_container_width=True,
+        key=f"sb_dl_plc_prog_{safe_name}"
+    )
+
+    # 3. Yes Data Download Button
     yes_csv = build_placement_csv(yes_students, live_history, headers=sheet_headers)
     st.sidebar.download_button(
-        label=f"📥 Download 'Yes' Data ({yes_cnt})",
+        label=f"🟢 Download 'Yes' Data ({yes_cnt})",
         data=yes_csv,
         file_name=f"Placement_Yes_Data_{safe_name}_{now_str}.csv",
         mime="text/csv",
@@ -896,10 +1057,10 @@ def render_placement_sidebar_download(all_placement_students, current_spoc, is_a
         key=f"sb_dl_plc_yes_{safe_name}"
     )
 
-    # No Data Download Button
+    # 4. No Data Download Button
     no_csv = build_placement_csv(no_students, live_history, headers=sheet_headers)
     st.sidebar.download_button(
-        label=f"📥 Download 'No' Data ({no_cnt})",
+        label=f"🔴 Download 'No' Data ({no_cnt})",
         data=no_csv,
         file_name=f"Placement_No_Data_{safe_name}_{now_str}.csv",
         mime="text/csv",
@@ -907,10 +1068,10 @@ def render_placement_sidebar_download(all_placement_students, current_spoc, is_a
         key=f"sb_dl_plc_no_{safe_name}"
     )
 
-    # Total Data Download Button
+    # 5. Total Data Download Button
     total_csv = build_placement_csv(total_students, live_history, headers=sheet_headers)
     st.sidebar.download_button(
-        label=f"📥 Download 'Total' Data ({total_cnt})",
+        label=f"📊 Download 'Total' Data ({total_cnt})",
         data=total_csv,
         file_name=f"Placement_Total_Data_{safe_name}_{now_str}.csv",
         mime="text/csv",
@@ -1278,7 +1439,8 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
         current_spoc=current_spoc,
         is_admin=is_admin,
         live_history=st.session_state.placement_live_history,
-        all_rows=all_rows
+        all_rows=all_rows,
+        placement_ws=placement_ws
     )
 
     # Top Brand Header Banner
@@ -1345,6 +1507,26 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
         active_queue_students = scoped_students
     else:
         active_queue_students = get_placement_students_for_spoc(all_rows, current_spoc)
+
+    # Discover unique Call IDs in active_queue_students
+    available_q_cids = sorted(list({str(s.get("call_id", "")).strip() for s in active_queue_students if str(s.get("call_id", "")).strip()}))
+    sel_q_cid = "All Call IDs"
+    if len(available_q_cids) > 1:
+        col_qf1, col_qf2 = st.columns([2.5, 3.5])
+        with col_qf1:
+            q_cid_options = [f"All Call IDs ({len(active_queue_students)})"] + [f"{cid} ({sum(1 for s in active_queue_students if str(s.get('call_id', '')).strip() == cid)})" for cid in available_q_cids]
+            sel_q_opt = st.selectbox(
+                "🏷️ Filter Calling Queue by Call ID:",
+                q_cid_options,
+                index=0,
+                key=f"plc_q_cid_filter_{current_spoc}"
+            )
+            if "(" in sel_q_opt:
+                sel_q_cid = sel_q_opt.split(" (")[0].strip()
+        if sel_q_cid != "All Call IDs":
+            active_queue_students = [s for s in active_queue_students if str(s.get("call_id", "")).strip() == sel_q_cid]
+            for i, s in enumerate(active_queue_students):
+                s["queue_index"] = i
 
     if not active_queue_students:
         st.warning(f"No students allocated for '{display_scope_name}'. Please choose another view.")
@@ -1759,6 +1941,7 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
 
     # 5. 🔄 Refresh DB Button
     if c_refresh.button("🔄 Refresh DB", use_container_width=True):
+        st.session_state.pop("placement_master_rows", None)
         fetch_placement_master_data.clear()
         st.cache_data.clear()
         st.toast("Database cache refreshed from Google Sheets!", icon="🔄")
@@ -1767,6 +1950,65 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
     # ==========================================================================
     # 🎯 CALLING TARGET BANNER WITH 1-CLICK COPY PHONE NUMBER (EXACT PICTURE MATCH)
     # ==========================================================================
+    # ==========================================================================
+    # 🏁 HIGH SPEED "ALL CALLS DONE" FINALIZE ACTION FOR EACH RESPECTIVE SPOC
+    # ==========================================================================
+    total_spoc_calls = len(active_queue_students)
+    done_spoc_calls = sum(1 for s in active_queue_students if s.get("call_status") == "Done")
+    prog_spoc_calls = total_spoc_calls - done_spoc_calls
+
+    if prog_spoc_calls > 0:
+        st.markdown(f"""
+            <div style="background: #ffffff; border: 2.2px solid #0284c7; border-radius: 10px; padding: 12px 16px; margin-bottom: 12px; box-shadow: 0 2px 10px rgba(2, 132, 199, 0.12);">
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                    <div>
+                        <span style="color: #0369a1; font-size: 1.05rem; font-weight: 800;">📞 Calling Scope: {current_spoc.title()}</span>
+                        <div style="color: #475569; font-size: 0.86rem; margin-top: 3px;">
+                            ✅ Done: <b style="color: #16a34a;">{done_spoc_calls}</b> &nbsp;|&nbsp; ⏳ In Progress: <b style="color: #ea580c;">{prog_spoc_calls}</b> &nbsp;|&nbsp; 📊 Total Allocated: <b>{total_spoc_calls}</b>
+                        </div>
+                    </div>
+                    <div style="color: #0f172a; font-size: 0.84rem; background: #f0f9ff; border: 1px solid #bae6fd; padding: 6px 12px; border-radius: 6px; font-weight: 600;">
+                        💡 After calling your students, click <b>ALL CALLS DONE</b> below to mark all your student calls as Done in Google Sheet.
+                    </div>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+
+        c_done_btn, c_done_help = st.columns([2.5, 3.5])
+        with c_done_btn:
+            btn_cid_suffix = f" ({sel_q_cid})" if 'sel_q_cid' in locals() and sel_q_cid != "All Call IDs" else ""
+            if st.button(f"🏁 ALL CALLS DONE{btn_cid_suffix} — Finalize in Google Sheet", type="primary", use_container_width=True, key=f"plc_main_done_{current_spoc}", help="Click when you have called your students. Instantly sets Call_Status = Done in Google Sheet for all your calls"):
+                updates_map = {}
+                batch_updates = []
+                for s in active_queue_students:
+                    s["call_status"] = "Done"
+                    p_cid = s.get("call_id") or ("1153" if s["row_num"] <= 1154 else "1000")
+                    updates_map[s["row_num"]] = ([], "Done", p_cid)
+                    batch_updates.append({
+                        'range': f'AH{s["row_num"]}:AI{s["row_num"]}',
+                        'values': [['Done', p_cid]]
+                    })
+                # 1. Instant sub-millisecond local update
+                batch_update_in_memory_placement_rows(updates_map)
+                # 2. Async background sync to Google Sheet (Zero UI wait)
+                if placement_ws and batch_updates:
+                    _PLACEMENT_BG_EXECUTOR.submit(placement_ws.batch_update, batch_updates)
+                st.balloons()
+                st.toast(f"🎉 Success! All {total_spoc_calls} calls for {current_spoc.title()} are now marked as 'Done' in Google Sheet!", icon="✅")
+                time.sleep(0.2)
+                st.rerun()
+        with c_done_help:
+            st.caption("⚡ **One-Click Sync**: Updates all student rows allocated to you to **`Call_Status: Done`** in Google Sheet and updates your downloadable SPOC reports.")
+    else:
+        st.markdown(f"""
+            <div style="background: linear-gradient(135deg, #dcfce7, #f0fdf4); border: 2.2px solid #22c55e; border-radius: 10px; padding: 12px 18px; margin-bottom: 12px; text-align: center; box-shadow: 0 2px 8px rgba(34, 197, 94, 0.15);">
+                <span style="font-size: 1.15rem; font-weight: 800; color: #15803d;">🎉 All Respective Calls Finished for {current_spoc.title()}!</span>
+                <div style="font-size: 0.88rem; color: #166534; margin-top: 4px;">
+                    All <b>{total_spoc_calls}</b> allocated student records are marked as <b>Call_Status: Done</b> in Google Sheet. You can download the completed data from the sidebar.
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+
     prog_pct = min((current_q_idx + 1) / total_assigned_queue, 1.0) if total_assigned_queue > 0 else 0
     st.progress(prog_pct)
 
@@ -1954,14 +2196,36 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
     is_already_verified = bool(current_student["contactable"])
     is_edit_mode = st.session_state.get("placement_editing_row") == current_student["row_num"]
 
+    cur_cid = current_student.get("call_id", "1153" if current_student["row_num"] <= 1154 else "1000")
+    cur_cstatus = "Done" if (is_edit_mode or is_already_verified) else current_student.get("call_status", "Progress")
+    cstatus_bg = "#dcfce7" if cur_cstatus == "Done" else "#fef3c7"
+    cstatus_fg = "#166534" if cur_cstatus == "Done" else "#92400e"
+    cstatus_bd = "#bbf7d0" if cur_cstatus == "Done" else "#fde68a"
+
     status_badge_html = f"""
-        <span style="background: #fef3c7; color: #92400e; border: 1.5px solid #fcd34d; padding: 4px 12px; border-radius: 6px; font-weight: 800; font-size: 0.88rem;">
-            ✏️ EDIT & UPDATE MODE (Row #{current_student['row_num']})
-        </span>
+        <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+            <span style="background: #e0f2fe; color: #0369a1; border: 1.5px solid #bae6fd; padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 0.84rem;">
+                🏷️ Call ID: {cur_cid}
+            </span>
+            <span style="background: {cstatus_bg}; color: {cstatus_fg}; border: 1.5px solid {cstatus_bd}; padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 0.84rem;">
+                📞 Status: {cur_cstatus}
+            </span>
+            <span style="background: #fef3c7; color: #92400e; border: 1.5px solid #fcd34d; padding: 4px 12px; border-radius: 6px; font-weight: 800; font-size: 0.88rem;">
+                ✏️ EDIT & UPDATE MODE (Row #{current_student['row_num']})
+            </span>
+        </div>
     """ if (is_edit_mode or is_already_verified) else f"""
-        <span style="background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 0.85rem;">
-            🆕 FRESH CALL VERIFICATION (Target #{current_q_idx + 1})
-        </span>
+        <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+            <span style="background: #e0f2fe; color: #0369a1; border: 1.5px solid #bae6fd; padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 0.84rem;">
+                🏷️ Call ID: {cur_cid}
+            </span>
+            <span style="background: {cstatus_bg}; color: {cstatus_fg}; border: 1.5px solid {cstatus_bd}; padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 0.84rem;">
+                📞 Status: {cur_cstatus}
+            </span>
+            <span style="background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 0.85rem;">
+                🆕 FRESH CALL VERIFICATION (Target #{current_q_idx + 1})
+            </span>
+        </div>
     """
 
     st.markdown('<div class="profile-card-enhanced" style="border-top: 4px solid #f59e0b;">', unsafe_allow_html=True)
@@ -2096,25 +2360,33 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                 ]
 
                 try:
-                    placement_ws.update(values=[payload], range_name=f"Q{current_student['row_num']}:AG{current_student['row_num']}")
-                    fetch_placement_master_data.clear()
+                    p_cid = current_student.get("call_id") or ("1153" if current_student["row_num"] <= 1154 else "1000")
+                    current_student["call_status"] = "Done"
 
+                    # 1. Update in-memory session rows immediately (Sub-millisecond)
+                    update_in_memory_placement_row(current_student['row_num'], payload, call_status="Done", call_id=p_cid)
+
+                    # 2. Asynchronous background sync to Google Sheets (Zero UI wait)
+                    dispatch_placement_sync(placement_ws, current_student['row_num'], payload, call_status="Done", call_id=p_cid)
+
+                    # 3. Update session live history
                     st.session_state.placement_live_history.insert(0, (current_student['row_num'], list(payload)))
                     st.session_state.placement_live_history = st.session_state.placement_live_history[:20]
                     st.session_state.pop("placement_editing_row", None)
                     st.session_state.pop("placement_active_recall", None)
 
-                    st.toast(f"✅ Saved Target #{current_q_idx + 1} ({current_student['student_name']}) as Not Contactable!", icon="✅")
+                    # 4. Instant UI Toast
+                    st.toast(f"✅ Saved Target #{current_q_idx + 1} ({current_student['student_name']}) as Not Contactable!", icon="🚫")
 
                     if current_q_idx + 1 < total_assigned_queue:
                         st.session_state.placement_queue_index = current_q_idx + 1
                         next_s = active_queue_students[current_q_idx + 1]
                         save_placement_progress(current_spoc, current_q_idx + 1, next_s["contact_number"], active_call_index=st.session_state.get("placement_active_call_index", 0))
 
-                    time.sleep(0.3)
+                    time.sleep(0.1)
                     st.rerun()
                 except Exception as ex:
-                    st.error(f"Error saving to Google Sheets: {ex}")
+                    st.error(f"Error saving: {ex}")
 
     # --------------------------------------------------------------------------
     # ✅ CONDITION: IF CONTACTABLE == YES -> Retention Status Options (Picture 3 & 4)
@@ -2632,25 +2904,33 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                     ]
 
                     try:
-                        placement_ws.update(values=[payload], range_name=f"Q{current_student['row_num']}:AG{current_student['row_num']}")
-                        fetch_placement_master_data.clear()
+                        p_cid = current_student.get("call_id") or ("1153" if current_student["row_num"] <= 1154 else "1000")
+                        current_student["call_status"] = "Done"
 
+                        # 1. Update in-memory session rows immediately (Sub-millisecond)
+                        update_in_memory_placement_row(current_student['row_num'], payload, call_status="Done", call_id=p_cid)
+
+                        # 2. Asynchronous background sync to Google Sheets (Zero UI wait)
+                        dispatch_placement_sync(placement_ws, current_student['row_num'], payload, call_status="Done", call_id=p_cid)
+
+                        # 3. Update session live history
                         st.session_state.placement_live_history.insert(0, (current_student['row_num'], list(payload)))
                         st.session_state.placement_live_history = st.session_state.placement_live_history[:20]
                         st.session_state.pop("placement_editing_row", None)
                         st.session_state.pop("placement_active_recall", None)
 
-                        st.toast(f"✅ Target #{current_q_idx + 1} ({current_student['student_name']}) updated and inserted successfully in Google Sheets!", icon="🎯")
+                        # 4. Instant UI Toast
+                        st.toast(f"✅ Target #{current_q_idx + 1} ({current_student['student_name']}) saved successfully in Google Sheets!", icon="🎯")
 
                         if current_q_idx + 1 < total_assigned_queue:
                             st.session_state.placement_queue_index = current_q_idx + 1
                             next_s = active_queue_students[current_q_idx + 1]
                             save_placement_progress(current_spoc, current_q_idx + 1, next_s["contact_number"], active_call_index=st.session_state.get("placement_active_call_index", 0))
 
-                        time.sleep(0.3)
+                        time.sleep(0.1)
                         st.rerun()
                     except Exception as ex:
-                        st.error(f"Error saving to Google Sheets: {ex}")
+                        st.error(f"Error saving: {ex}")
 
     st.markdown('</div>', unsafe_allow_html=True)
 

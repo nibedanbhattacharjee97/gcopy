@@ -167,7 +167,7 @@ ENROLLMENT_REMARKS_YES_OPTIONS = [
     "Disconnected,Did'nt Share All Information."
 ]
 
-# Master 41 Headers
+# Master 43 Headers
 ENROLLMENT_HEADERS = [
     "Called By", "Batch Code", "Course Name", "Start Date", "Student Code",
     "Student Name", "DOB", "Gender", "Mobile No.", "Alt Mobile No",
@@ -180,7 +180,9 @@ ENROLLMENT_HEADERS = [
     "Current Educational Status", "Verification Date", "Interest In Job",
     "Present Working Status", "COMPANY NAME", "Salary", "Part Time /Full Time",
     "How Many Months Working", "Did They Left The Job After Joining Course",
-    "Why They Joined Course, If Stu Working", "Enroll Remarks", "Remarks 2", "Remarks 3"
+    "Why They Joined Course, If Stu Working", "Enroll Remarks", "Remarks 2", "Remarks 3",
+    # Call tracking columns (42 to 43 / AP to AQ)
+    "Call_Status", "Call_id"
 ]
 
 # ==============================================================================
@@ -240,7 +242,7 @@ def get_enrollment_highest_verified_index(student_list):
             highest = idx
     return highest
 
-def update_in_memory_enrollment_row(row_num, payload):
+def update_in_memory_enrollment_row(row_num, payload, call_status="Done", call_id="3300"):
     """
     Updates the active in-memory master rows in session state immediately.
     Guarantees instantaneous UI re-render without hitting Google Sheets API.
@@ -251,10 +253,13 @@ def update_in_memory_enrollment_row(row_num, payload):
             if 0 < row_num <= len(m_rows):
                 idx = row_num - 1
                 curr = list(m_rows[idx])
-                if len(curr) < 41:
-                    curr.extend([""] * (41 - len(curr)))
-                for i, val in enumerate(payload):
-                    curr[17 + i] = str(val)
+                if len(curr) < 43:
+                    curr.extend([""] * (43 - len(curr)))
+                if payload:
+                    for i, val in enumerate(payload):
+                        curr[17 + i] = str(val)
+                curr[41] = call_status
+                curr[42] = call_id
                 m_rows[idx] = curr
                 st.session_state.enrollment_master_rows = m_rows
 
@@ -263,16 +268,19 @@ def update_in_memory_enrollment_row(row_num, payload):
             if 0 < row_num <= len(crows):
                 idx = row_num - 1
                 curr = list(crows[idx])
-                if len(curr) < 41:
-                    curr.extend([""] * (41 - len(curr)))
-                for i, val in enumerate(payload):
-                    curr[17 + i] = str(val)
+                if len(curr) < 43:
+                    curr.extend([""] * (43 - len(curr)))
+                if payload:
+                    for i, val in enumerate(payload):
+                        curr[17 + i] = str(val)
+                curr[41] = call_status
+                curr[42] = call_id
                 crows[idx] = curr
                 st.session_state.custom_enrollment_rows = crows
     except Exception:
         pass
 
-def update_local_enrollment_row(row_num, payload):
+def update_local_enrollment_row(row_num, payload, call_status="Done", call_id="3300"):
     """Updates local CSV and session cache for zero data loss."""
     try:
         with _CSV_FILE_LOCK:
@@ -282,10 +290,13 @@ def update_local_enrollment_row(row_num, payload):
                 if 0 < row_num <= len(rows):
                     idx = row_num - 1
                     curr = list(rows[idx])
-                    if len(curr) < 41:
-                        curr.extend([""] * (41 - len(curr)))
-                    for i, val in enumerate(payload):
-                        curr[17 + i] = str(val)
+                    if len(curr) < 43:
+                        curr.extend([""] * (43 - len(curr)))
+                    if payload:
+                        for i, val in enumerate(payload):
+                            curr[17 + i] = str(val)
+                    curr[41] = call_status
+                    curr[42] = call_id
                     rows[idx] = curr
                     with open(LOCAL_ENROLLMENT_CSV, "w", newline="", encoding="utf-8") as f:
                         writer = csv.writer(f)
@@ -293,14 +304,75 @@ def update_local_enrollment_row(row_num, payload):
     except Exception:
         pass
 
-def _bg_sync_worker(ws, row_num, payload):
+def batch_update_local_enrollment_rows(updates_map):
+    """
+    updates_map: dict of {row_num: (payload, call_status, call_id)}
+    Updates local CSV in a single pass for lightning-fast disk I/O.
+    """
+    if not updates_map:
+        return
+    try:
+        with _CSV_FILE_LOCK:
+            if os.path.exists(LOCAL_ENROLLMENT_CSV):
+                with open(LOCAL_ENROLLMENT_CSV, "r", encoding="utf-8") as f:
+                    rows = list(csv.reader(f))
+                for row_num, (payload, call_status, call_id) in updates_map.items():
+                    if 0 < row_num <= len(rows):
+                        idx = row_num - 1
+                        curr = list(rows[idx])
+                        if len(curr) < 43:
+                            curr.extend([""] * (43 - len(curr)))
+                        if payload and len(payload) > 0:
+                            for i, val in enumerate(payload):
+                                curr[17 + i] = str(val)
+                        if call_status is not None:
+                            curr[41] = str(call_status)
+                        if call_id is not None:
+                            curr[42] = str(call_id)
+                        rows[idx] = curr
+                with open(LOCAL_ENROLLMENT_CSV, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f)
+                    writer.writerows(rows)
+    except Exception:
+        pass
+
+def batch_update_in_memory_enrollment_rows(updates_map):
+    """
+    updates_map: dict of {row_num: (payload, call_status, call_id)}
+    Updates in-memory session rows in a single microsecond pass.
+    """
+    if not updates_map:
+        return
+    try:
+        for key in ["enrollment_master_rows", "custom_enrollment_rows"]:
+            if key in st.session_state and st.session_state[key]:
+                m_rows = st.session_state[key]
+                for row_num, (payload, call_status, call_id) in updates_map.items():
+                    if 0 < row_num <= len(m_rows):
+                        idx = row_num - 1
+                        curr = list(m_rows[idx])
+                        if len(curr) < 43:
+                            curr.extend([""] * (43 - len(curr)))
+                        if payload and len(payload) > 0:
+                            for i, val in enumerate(payload):
+                                curr[17 + i] = str(val)
+                        if call_status is not None:
+                            curr[41] = str(call_status)
+                        if call_id is not None:
+                            curr[42] = str(call_id)
+                        m_rows[idx] = curr
+                st.session_state[key] = m_rows
+    except Exception:
+        pass
+
+def _bg_sync_worker(ws, row_num, payload, call_status="Done", call_id="3300"):
     """
     Background worker: Syncs row to local CSV and Google Sheets with retry.
     Never blocks UI interaction.
     """
     # 1. Update local CSV immediately so disk backup is safe
     try:
-        update_local_enrollment_row(row_num, payload)
+        update_local_enrollment_row(row_num, payload, call_status, call_id)
     except Exception:
         pass
 
@@ -308,15 +380,23 @@ def _bg_sync_worker(ws, row_num, payload):
     if ws:
         for attempt in range(1, 4):
             try:
-                ws.update(values=[payload], range_name=f"R{row_num}:AO{row_num}")
+                # 24 verification columns R:AO
+                if payload and len(payload) > 0:
+                    ws.update(values=[payload], range_name=f"R{row_num}:AO{row_num}")
+                # Separate update for AP:AQ (Call_Status, Call_id)
+                try:
+                    if ws.col_count >= 43:
+                        ws.update(values=[[call_status, call_id]], range_name=f"AP{row_num}:AQ{row_num}")
+                except Exception:
+                    pass
                 break
             except Exception:
                 if attempt < 3:
                     time.sleep(1.0)
 
-def dispatch_enrollment_sync(ws, row_num, payload):
+def dispatch_enrollment_sync(ws, row_num, payload, call_status="Done", call_id="3300"):
     """Dispatches background sync for zero UI delay."""
-    _ENROLLMENT_BG_EXECUTOR.submit(_bg_sync_worker, ws, row_num, list(payload))
+    _ENROLLMENT_BG_EXECUTOR.submit(_bg_sync_worker, ws, row_num, list(payload), call_status, call_id)
 
 # ==============================================================================
 # 💾 PERSISTENCE & QUEUE PROGRESS FOR ENROLLMENT
@@ -475,7 +555,7 @@ def fetch_enrollment_master_data(_enrollment_ws):
 def parse_all_enrollment_students(all_rows):
     """
     Parses all student rows from the Enrollment Sheet.
-    Matches the 39-column layout (Columns 1-17 Static, Columns 18-39 Yellow Marked).
+    Matches the 43-column layout (Columns 1-17 Static, Columns 18-41 Yellow Marked, Columns 42-43 Call_Status & Call_id).
     """
     if not all_rows or len(all_rows) <= 1:
         return []
@@ -489,7 +569,12 @@ def parse_all_enrollment_students(all_rows):
         if has_content:
             if not assigned_spoc:
                 assigned_spoc = "Unassigned"
-            padded = list(r) + [""] * max(0, 42 - len(r))
+            padded = list(r) + [""] * max(0, 43 - len(r))
+            raw_cont = padded[17].strip()
+            raw_vdate = padded[29].strip()
+            call_status = padded[41].strip() if len(padded) > 41 and padded[41].strip() else ("Done" if (raw_cont.lower() in ["yes", "no"] or raw_vdate) else "Progress")
+            call_id = padded[42].strip() if len(padded) > 42 and padded[42].strip() else ("3300" if r_idx <= 3301 else "3300_Update")
+
             students.append({
                 "row_num": r_idx,
                 "queue_index": q_idx,
@@ -511,7 +596,7 @@ def parse_all_enrollment_students(all_rows):
                 "funder_name": padded[15].strip(),
                 "enrollment_status": padded[16].strip(),
                 # Yellow Marked Verified columns (18 to 41 / R to AO)
-                "contactable": padded[17].strip(),
+                "contactable": raw_cont,
                 "class_started": padded[18].strip(),
                 "got_info_anudip": padded[19].strip(),
                 "referral_person_ok": padded[20].strip(),
@@ -523,7 +608,7 @@ def parse_all_enrollment_students(all_rows):
                 "class_mode": padded[26].strip(),
                 "quality_of_classes": padded[27].strip(),
                 "current_edu_status": padded[28].strip(),
-                "verification_date": padded[29].strip(),
+                "verification_date": raw_vdate,
                 "interest_in_job": padded[30].strip(),
                 "present_working_status": padded[31].strip(),
                 "company_name": padded[32].strip(),
@@ -534,7 +619,10 @@ def parse_all_enrollment_students(all_rows):
                 "why_joined_course": padded[37].strip(),
                 "enroll_remarks": padded[38].strip(),
                 "remarks_2": padded[39].strip(),
-                "remarks_3": padded[40].strip() if len(padded) > 40 else ""
+                "remarks_3": padded[40].strip() if len(padded) > 40 else "",
+                # Call tracking columns (42 to 43 / AP to AQ)
+                "call_status": call_status,
+                "call_id": call_id
             })
             q_idx += 1
     return students
@@ -744,28 +832,34 @@ def render_enrollment_not_contactable_list(fresh_stats, current_spoc):
 # ==============================================================================
 def build_enrollment_csv(students_subset, live_history=None, headers=None):
     if headers is None:
-        headers = ENROLLMENT_HEADERS
+        headers = list(ENROLLMENT_HEADERS)
+    else:
+        headers = list(headers)
+
+    if "Call_Status" not in headers:
+        headers.append("Call_Status")
+    if "Call_id" not in headers:
+        headers.append("Call_id")
 
     if live_history is None:
         live_history = []
-    live_map = {r_num: r_data for r_num, r_data in live_history}
+    live_map = {}
+    for item in live_history:
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            live_map[item[0]] = item[1]
 
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(headers)
 
     for s in students_subset:
-        r_num = s["row_num"]
+        r_num = s.get("row_num")
         live_entry = live_map.get(r_num)
         if live_entry:
             pad_live = list(live_entry) + [""] * max(0, 24 - len(live_entry))
-            row = [
-                s["called_by"], s["batch_code"], s["course_name"], s["start_date"],
-                s["student_code"], s["student_name"], s["dob"], s["gender"],
-                s["contact_number"], s["alt_contact_number"], s["centre_code"],
-                s["state"], s["come_to_know"], s["referral_person_name"],
-                s["education_qualification"], s["funder_name"], s["enrollment_status"],
-                # Yellow Marked Verified columns
+            cont = pad_live[0].strip()
+            vdate = pad_live[12].strip()
+            verif_cols = [
                 pad_live[0], pad_live[1], pad_live[2], pad_live[3], pad_live[4],
                 pad_live[5], pad_live[6], pad_live[7], pad_live[8], pad_live[9],
                 pad_live[10], pad_live[11], pad_live[12], pad_live[13], pad_live[14],
@@ -773,26 +867,35 @@ def build_enrollment_csv(students_subset, live_history=None, headers=None):
                 pad_live[20], pad_live[21], pad_live[22], pad_live[23]
             ]
         else:
-            row = [
-                s["called_by"], s["batch_code"], s["course_name"], s["start_date"],
-                s["student_code"], s["student_name"], s["dob"], s["gender"],
-                s["contact_number"], s["alt_contact_number"], s["centre_code"],
-                s["state"], s["come_to_know"], s["referral_person_name"],
-                s["education_qualification"], s["funder_name"], s["enrollment_status"],
-                # Yellow Marked Verified columns
-                s["contactable"], s["class_started"], s["got_info_anudip"],
-                s["referral_person_ok"], s.get("referral_name_fill", ""), s["your_dob"], s["monthly_income"],
-                s["satisfied_conversation"], s["classes_in_week"], s.get("class_mode", ""), s["quality_of_classes"],
-                s["current_edu_status"], s["verification_date"], s["interest_in_job"],
-                s["present_working_status"], s["company_name"], s["salary"],
-                s["part_full_time"], s["how_many_months"], s["left_job_after_joining"],
-                s["why_joined_course"], s["enroll_remarks"], s["remarks_2"], s["remarks_3"]
+            cont = s.get("contactable", "").strip()
+            vdate = s.get("verification_date", "").strip()
+            verif_cols = [
+                cont, s.get("class_started", ""), s.get("got_info_anudip", ""),
+                s.get("referral_person_ok", ""), s.get("referral_name_fill", ""), s.get("your_dob", ""), s.get("monthly_income", ""),
+                s.get("satisfied_conversation", ""), s.get("classes_in_week", ""), s.get("class_mode", ""), s.get("quality_of_classes", ""),
+                s.get("current_edu_status", ""), vdate, s.get("interest_in_job", ""),
+                s.get("present_working_status", ""), s.get("company_name", ""), s.get("salary", ""),
+                s.get("part_full_time", ""), s.get("how_many_months", ""), s.get("left_job_after_joining", ""),
+                s.get("why_joined_course", ""), s.get("enroll_remarks", ""), s.get("remarks_2", ""), s.get("remarks_3", "")
             ]
+
+        is_done = (cont.lower() in ["yes", "no"]) or bool(vdate)
+        row_status = "Done" if is_done else s.get("call_status", "Progress")
+        row_call_id = s.get("call_id") or ("3300" if (r_num and r_num <= 3301) else "3300_Update")
+
+        row = [
+            s.get("called_by", ""), s.get("batch_code", ""), s.get("course_name", ""), s.get("start_date", ""),
+            s.get("student_code", ""), s.get("student_name", ""), s.get("dob", ""), s.get("gender", ""),
+            s.get("contact_number", ""), s.get("alt_contact_number", ""), s.get("centre_code", ""),
+            s.get("state", ""), s.get("come_to_know", ""), s.get("referral_person_name", ""),
+            s.get("education_qualification", ""), s.get("funder_name", ""), s.get("enrollment_status", "")
+        ] + verif_cols + [row_status, row_call_id]
+
         writer.writerow(row)
 
-    return output.getvalue().encode("utf-8")
+    return "\ufeff" + output.getvalue()
 
-def render_enrollment_sidebar_download(all_enrollment_students, current_spoc, is_admin=False, live_history=None, all_rows=None):
+def render_enrollment_sidebar_download(all_enrollment_students, current_spoc, is_admin=False, live_history=None, all_rows=None, enrollment_ws=None):
     if live_history is None:
         live_history = []
 
@@ -820,7 +923,7 @@ def render_enrollment_sidebar_download(all_enrollment_students, current_spoc, is
                     new_rows = []
                     for row in ws_active.iter_rows(values_only=True):
                         if any(row):
-                            new_rows.append([str(c) if c is not None else "" for c in row[:41]])
+                            new_rows.append([str(c) if c is not None else "" for c in row[:43]])
 
                 if new_rows and len(new_rows) > 1:
                     st.session_state.custom_enrollment_rows = new_rows
@@ -832,9 +935,12 @@ def render_enrollment_sidebar_download(all_enrollment_students, current_spoc, is
             except Exception as e:
                 st.error(f"Error reading file: {e}")
 
-    live_map = {r_num: r_data[0].strip().lower() for r_num, r_data in live_history if len(r_data) > 0}
+    live_map = {}
+    for item in live_history:
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            live_map[item[0]] = item[1]
 
-    all_spocs = sorted(list({s["called_by"].strip().title() for s in all_enrollment_students if s["called_by"]}))
+    all_spocs = sorted(list({s["called_by"].strip().title() for s in all_enrollment_students if s.get("called_by")}))
 
     if is_admin:
         sel_download_spoc = st.sidebar.selectbox(
@@ -853,23 +959,121 @@ def render_enrollment_sidebar_download(all_enrollment_students, current_spoc, is
         target_students = [s for s in all_enrollment_students if s["called_by"].strip().lower() == current_spoc.strip().lower()]
         safe_name = current_spoc.title().replace(" ", "_")
 
-    yes_students, no_students = [], []
-    for s in target_students:
-        cont = live_map.get(s["row_num"], s["contactable"].strip().lower())
-        if cont == "yes":
-            yes_students.append(s)
-        elif cont == "no":
-            no_students.append(s)
-
-    total_students = yes_students + no_students
-    yes_cnt, no_cnt, total_cnt = len(yes_students), len(no_students), len(total_students)
-
     now_str = datetime.now().strftime("%Y%m%d_%H%M")
+
+    # Dynamic Call ID Filter (Discovers all unique Call IDs from target_students: 3300, 3300_Update)
+    found_cids = sorted(list({str(s.get("call_id", "")).strip() for s in target_students if str(s.get("call_id", "")).strip()}))
+    for def_cid in ["3300", "3300_Update"]:
+        if def_cid not in found_cids and any(str(s.get("call_id", "")).strip() == def_cid for s in all_enrollment_students):
+            found_cids.append(def_cid)
+    found_cids = sorted(found_cids)
+    if not found_cids:
+        found_cids = ["3300", "3300_Update"]
+    call_id_opts = ["All Call IDs"] + found_cids
+    sel_call_id = st.sidebar.selectbox("🏷️ Filter by Call ID:", call_id_opts, index=0, key=f"sb_enr_cid_{safe_name}")
+
+    filtered_students = target_students
+    if sel_call_id != "All Call IDs":
+        filtered_students = [s for s in target_students if str(s.get("call_id", "")).strip() == sel_call_id]
+
+    done_students = []
+    progress_students = []
+    yes_students = []
+    no_students = []
+
+    for s in filtered_students:
+        r_num = s["row_num"]
+        lp = live_map.get(r_num)
+        cont = lp[0].strip().lower() if (lp and len(lp) > 0) else s.get("contactable", "").strip().lower()
+        vdate = lp[12].strip() if (lp and len(lp) > 12) else s.get("verification_date", "").strip()
+        is_done = (cont in ["yes", "no"]) or bool(vdate)
+
+        if is_done:
+            done_students.append(s)
+            if cont == "yes":
+                yes_students.append(s)
+            else:
+                no_students.append(s)
+        else:
+            progress_students.append(s)
+
+    total_students = filtered_students
+    done_cnt = len(done_students)
+    prog_cnt = len(progress_students)
+    yes_cnt = len(yes_students)
+    no_cnt = len(no_students)
+    total_cnt = len(total_students)
+
     sheet_headers = ENROLLMENT_HEADERS
 
+    # Styled container matching the design
+    st.sidebar.markdown(f"""
+        <div style="background: #ffffff; border: 2.2px solid #22c55e; border-radius: 10px; padding: 12px 14px; margin-top: 10px; margin-bottom: 12px; box-shadow: 0 2px 10px rgba(34, 197, 94, 0.15);">
+            <div style="font-weight: 800; color: #15803d; font-size: 0.96rem; text-align: center; text-transform: uppercase; letter-spacing: 0.5px;">
+                📥 Enrollment Data Download ({safe_name})
+            </div>
+            <div style="display: flex; justify-content: space-around; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; padding: 6px 4px; font-size: 0.78rem; font-weight: 700; margin-top: 8px;">
+                <span style="color: #15803d;">✅ Done: {done_cnt}</span>
+                <span style="color: #ea580c;">⏳ Progress: {prog_cnt}</span>
+                <span style="color: #1e40af;">📊 Total: {total_cnt}</span>
+            </div>
+            <div style="display: flex; justify-content: space-around; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 4px 4px; font-size: 0.76rem; font-weight: 600; margin-top: 4px;">
+                <span style="color: #16a34a;">🟢 Yes: {yes_cnt}</span>
+                <span style="color: #dc2626;">🔴 No: {no_cnt}</span>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # 🏁 High Speed One-Click Action to mark all filtered calls as Done
+    if prog_cnt > 0 and len(filtered_students) > 0:
+        btn_cid_label = f" ({sel_call_id})" if sel_call_id != "All Call IDs" else ""
+        if st.sidebar.button(f"🏁 ALL CALLS DONE{btn_cid_label}", type="primary", key=f"sb_enr_all_done_{safe_name}_{sel_call_id}", use_container_width=True, help="Instantly marks all calls in this scope as 'Done' in Google Sheet"):
+            updates_map = {}
+            batch_updates = []
+            for s in filtered_students:
+                s["call_status"] = "Done"
+                cid = s.get("call_id", "3300")
+                updates_map[s["row_num"]] = ([], "Done", cid)
+                batch_updates.append({
+                    'range': f'AP{s["row_num"]}:AQ{s["row_num"]}',
+                    'values': [['Done', cid]]
+                })
+            # 1. Instant sub-millisecond local update
+            batch_update_in_memory_enrollment_rows(updates_map)
+            batch_update_local_enrollment_rows(updates_map)
+            # 2. Async background sync to Google Sheet (Zero UI wait)
+            if enrollment_ws and batch_updates:
+                _ENROLLMENT_BG_EXECUTOR.submit(enrollment_ws.batch_update, batch_updates)
+            st.toast(f"🎉 All calls for {safe_name}{btn_cid_label} marked as 'Done' in Google Sheet!", icon="✅")
+            time.sleep(0.2)
+            st.rerun()
+
+    # 1. Download 'Call Done' Data (Completed Calls)
+    done_csv = build_enrollment_csv(done_students, live_history, headers=sheet_headers)
+    st.sidebar.download_button(
+        label=f"✅ Download 'Call Done' Data ({done_cnt})",
+        data=done_csv,
+        file_name=f"Enrollment_CallDone_Data_{safe_name}_{now_str}.csv",
+        mime="text/csv",
+        use_container_width=True,
+        key=f"sb_dl_enr_done_{safe_name}"
+    )
+
+    # 2. Download 'In Progress' Data (For reassigning if SPOC left)
+    prog_csv = build_enrollment_csv(progress_students, live_history, headers=sheet_headers)
+    st.sidebar.download_button(
+        label=f"⏳ Download 'In Progress' Data ({prog_cnt})",
+        data=prog_csv,
+        file_name=f"Enrollment_InProgress_Data_{safe_name}_{now_str}.csv",
+        mime="text/csv",
+        use_container_width=True,
+        key=f"sb_dl_enr_prog_{safe_name}"
+    )
+
+    # 3. Yes Data Download Button
     yes_csv = build_enrollment_csv(yes_students, live_history, headers=sheet_headers)
     st.sidebar.download_button(
-        label=f"📥 Download 'Yes' Data ({yes_cnt})",
+        label=f"🟢 Download 'Yes' Data ({yes_cnt})",
         data=yes_csv,
         file_name=f"Enrollment_Yes_Data_{safe_name}_{now_str}.csv",
         mime="text/csv",
@@ -877,9 +1081,10 @@ def render_enrollment_sidebar_download(all_enrollment_students, current_spoc, is
         key=f"sb_dl_enr_yes_{safe_name}"
     )
 
+    # 4. No Data Download Button
     no_csv = build_enrollment_csv(no_students, live_history, headers=sheet_headers)
     st.sidebar.download_button(
-        label=f"📥 Download 'No' Data ({no_cnt})",
+        label=f"🔴 Download 'No' Data ({no_cnt})",
         data=no_csv,
         file_name=f"Enrollment_No_Data_{safe_name}_{now_str}.csv",
         mime="text/csv",
@@ -887,9 +1092,10 @@ def render_enrollment_sidebar_download(all_enrollment_students, current_spoc, is
         key=f"sb_dl_enr_no_{safe_name}"
     )
 
+    # 5. Total Data Download Button
     total_csv = build_enrollment_csv(total_students, live_history, headers=sheet_headers)
     st.sidebar.download_button(
-        label=f"📥 Download 'Total' Data ({total_cnt})",
+        label=f"📊 Download 'Total' Data ({total_cnt})",
         data=total_csv,
         file_name=f"Enrollment_Total_Data_{safe_name}_{now_str}.csv",
         mime="text/csv",
@@ -1016,7 +1222,8 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
         current_spoc=current_spoc,
         is_admin=is_admin,
         live_history=st.session_state.enrollment_live_history,
-        all_rows=all_rows
+        all_rows=all_rows,
+        enrollment_ws=enrollment_ws
     )
 
     # Top Brand Header Banner
@@ -1180,6 +1387,26 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
             for i, s in enumerate(active_queue_students):
                 s["queue_index"] = i
 
+    # Discover unique Call IDs in active_queue_students
+    available_q_cids = sorted(list({str(s.get("call_id", "")).strip() for s in active_queue_students if str(s.get("call_id", "")).strip()}))
+    sel_q_cid = "All Call IDs"
+    if len(available_q_cids) > 1:
+        col_qf1, col_qf2 = st.columns([2.5, 3.5])
+        with col_qf1:
+            q_cid_options = [f"All Call IDs ({len(active_queue_students)})"] + [f"{cid} ({sum(1 for s in active_queue_students if str(s.get('call_id', '')).strip() == cid)})" for cid in available_q_cids]
+            sel_q_opt = st.selectbox(
+                "🏷️ Filter Calling Queue by Call ID:",
+                q_cid_options,
+                index=0,
+                key=f"enr_q_cid_filter_{current_spoc}"
+            )
+            if "(" in sel_q_opt:
+                sel_q_cid = sel_q_opt.split(" (")[0].strip()
+        if sel_q_cid != "All Call IDs":
+            active_queue_students = [s for s in active_queue_students if str(s.get("call_id", "")).strip() == sel_q_cid]
+            for i, s in enumerate(active_queue_students):
+                s["queue_index"] = i
+
     total_assigned_queue = len(active_queue_students)
     if total_assigned_queue == 0:
         active_queue_students = all_enrollment_students
@@ -1278,6 +1505,66 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
         st.cache_data.clear()
         st.toast("Database cache refreshed from Google Sheets!", icon="🔄")
         st.rerun()
+
+    # ==========================================================================
+    # 🏁 HIGH SPEED "ALL CALLS DONE" FINALIZE ACTION FOR EACH RESPECTIVE SPOC
+    # ==========================================================================
+    total_spoc_calls = len(active_queue_students)
+    done_spoc_calls = sum(1 for s in active_queue_students if s.get("call_status") == "Done")
+    prog_spoc_calls = total_spoc_calls - done_spoc_calls
+
+    if prog_spoc_calls > 0:
+        st.markdown(f"""
+            <div style="background: #ffffff; border: 2.2px solid #0284c7; border-radius: 10px; padding: 12px 16px; margin-bottom: 12px; box-shadow: 0 2px 10px rgba(2, 132, 199, 0.12);">
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                    <div>
+                        <span style="color: #0369a1; font-size: 1.05rem; font-weight: 800;">📞 Calling Scope: {current_spoc.title()}</span>
+                        <div style="color: #475569; font-size: 0.86rem; margin-top: 3px;">
+                            ✅ Done: <b style="color: #16a34a;">{done_spoc_calls}</b> &nbsp;|&nbsp; ⏳ In Progress: <b style="color: #ea580c;">{prog_spoc_calls}</b> &nbsp;|&nbsp; 📊 Total Allocated: <b>{total_spoc_calls}</b>
+                        </div>
+                    </div>
+                    <div style="color: #0f172a; font-size: 0.84rem; background: #f0f9ff; border: 1px solid #bae6fd; padding: 6px 12px; border-radius: 6px; font-weight: 600;">
+                        💡 After calling your students, click <b>ALL CALLS DONE</b> below to mark all your student calls as Done in Google Sheet.
+                    </div>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+
+        c_done_btn, c_done_help = st.columns([2.5, 3.5])
+        with c_done_btn:
+            btn_cid_suffix = f" ({sel_q_cid})" if 'sel_q_cid' in locals() and sel_q_cid != "All Call IDs" else ""
+            if st.button(f"🏁 ALL CALLS DONE{btn_cid_suffix} — Finalize in Google Sheet", type="primary", use_container_width=True, key=f"enr_main_done_{current_spoc}", help="Click when you have called your students. Instantly sets Call_Status = Done in Google Sheet for all your calls"):
+                updates_map = {}
+                batch_updates = []
+                for s in active_queue_students:
+                    s["call_status"] = "Done"
+                    cid = s.get("call_id") or ("3300" if s["row_num"] <= 3301 else "3300_Update")
+                    updates_map[s["row_num"]] = ([], "Done", cid)
+                    batch_updates.append({
+                        'range': f'AP{s["row_num"]}:AQ{s["row_num"]}',
+                        'values': [['Done', cid]]
+                    })
+                # 1. Instant sub-millisecond local update
+                batch_update_in_memory_enrollment_rows(updates_map)
+                batch_update_local_enrollment_rows(updates_map)
+                # 2. Async background sync to Google Sheet (Zero UI wait)
+                if enrollment_ws and batch_updates:
+                    _ENROLLMENT_BG_EXECUTOR.submit(enrollment_ws.batch_update, batch_updates)
+                st.balloons()
+                st.toast(f"🎉 Success! All {total_spoc_calls} calls for {current_spoc.title()} are now marked as 'Done' in Google Sheet!", icon="✅")
+                time.sleep(0.2)
+                st.rerun()
+        with c_done_help:
+            st.caption("⚡ **One-Click Sync**: Updates all student rows allocated to you to **`Call_Status: Done`** in Google Sheet and updates your downloadable SPOC reports.")
+    else:
+        st.markdown(f"""
+            <div style="background: linear-gradient(135deg, #dcfce7, #f0fdf4); border: 2.2px solid #22c55e; border-radius: 10px; padding: 12px 18px; margin-bottom: 12px; text-align: center; box-shadow: 0 2px 10px rgba(34, 197, 94, 0.15);">
+                <span style="font-size: 1.15rem; font-weight: 800; color: #15803d;">🎉 All Respective Calls Finished for {current_spoc.title()}!</span>
+                <div style="font-size: 0.88rem; color: #166534; margin-top: 4px;">
+                    All <b>{total_spoc_calls}</b> allocated student records are marked as <b>Call_Status: Done</b> in Google Sheet. You can download the completed data from the sidebar.
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
 
     # Progress Bar
     prog_pct = min((current_q_idx + 1) / total_assigned_queue, 1.0) if total_assigned_queue > 0 else 0
@@ -1436,14 +1723,36 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
     is_already_verified = bool(current_student["contactable"])
     is_edit_mode = st.session_state.get("enrollment_editing_row") == current_student["row_num"]
 
+    cur_cid = current_student.get("call_id", "3300")
+    cur_cstatus = "Done" if (is_edit_mode or is_already_verified) else current_student.get("call_status", "Progress")
+    cstatus_bg = "#dcfce7" if cur_cstatus == "Done" else "#fef3c7"
+    cstatus_fg = "#166534" if cur_cstatus == "Done" else "#92400e"
+    cstatus_bd = "#bbf7d0" if cur_cstatus == "Done" else "#fde68a"
+
     status_badge_html = f"""
-        <span style="background: #fef3c7; color: #92400e; border: 1.5px solid #fcd34d; padding: 4px 12px; border-radius: 6px; font-weight: 800; font-size: 0.88rem;">
-            ✏️ EDIT & UPDATE MODE (Row #{current_student['row_num']})
-        </span>
+        <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+            <span style="background: #e0f2fe; color: #0369a1; border: 1.5px solid #bae6fd; padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 0.84rem;">
+                🏷️ Call ID: {cur_cid}
+            </span>
+            <span style="background: {cstatus_bg}; color: {cstatus_fg}; border: 1.5px solid {cstatus_bd}; padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 0.84rem;">
+                📞 Status: {cur_cstatus}
+            </span>
+            <span style="background: #fef3c7; color: #92400e; border: 1.5px solid #fcd34d; padding: 4px 12px; border-radius: 6px; font-weight: 800; font-size: 0.88rem;">
+                ✏️ EDIT & UPDATE MODE (Row #{current_student['row_num']})
+            </span>
+        </div>
     """ if (is_edit_mode or is_already_verified) else f"""
-        <span style="background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 0.85rem;">
-            ✨ FRESH CALL VERIFICATION (Target #{current_q_idx + 1})
-        </span>
+        <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+            <span style="background: #e0f2fe; color: #0369a1; border: 1.5px solid #bae6fd; padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 0.84rem;">
+                🏷️ Call ID: {cur_cid}
+            </span>
+            <span style="background: {cstatus_bg}; color: {cstatus_fg}; border: 1.5px solid {cstatus_bd}; padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 0.84rem;">
+                📞 Status: {cur_cstatus}
+            </span>
+            <span style="background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 0.85rem;">
+                ✨ FRESH CALL VERIFICATION (Target #{current_q_idx + 1})
+            </span>
+        </div>
     """
 
     st.markdown('<div class="profile-card-enhanced" style="border-top: 4px solid #eab308;">', unsafe_allow_html=True)
@@ -1573,11 +1882,14 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
             ]
 
             try:
+                p_cid = current_student.get("call_id", "3300")
+                current_student["call_status"] = "Done"
+
                 # 1. Update in-memory session rows immediately (Sub-millisecond)
-                update_in_memory_enrollment_row(current_student['row_num'], payload)
+                update_in_memory_enrollment_row(current_student['row_num'], payload, call_status="Done", call_id=p_cid)
 
                 # 2. Asynchronous background sync to Google Sheets & local CSV
-                dispatch_enrollment_sync(enrollment_ws, current_student['row_num'], payload)
+                dispatch_enrollment_sync(enrollment_ws, current_student['row_num'], payload, call_status="Done", call_id=p_cid)
 
                 # 3. Update session live history
                 st.session_state.enrollment_live_history.insert(0, (current_student['row_num'], list(payload)))
@@ -1702,11 +2014,14 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
                 ]
 
                 try:
+                    p_cid = current_student.get("call_id", "3300")
+                    current_student["call_status"] = "Done"
+
                     # 1. Update in-memory session rows immediately (Sub-millisecond)
-                    update_in_memory_enrollment_row(current_student['row_num'], payload)
+                    update_in_memory_enrollment_row(current_student['row_num'], payload, call_status="Done", call_id=p_cid)
 
                     # 2. Asynchronous background sync to Google Sheets & local CSV
-                    dispatch_enrollment_sync(enrollment_ws, current_student['row_num'], payload)
+                    dispatch_enrollment_sync(enrollment_ws, current_student['row_num'], payload, call_status="Done", call_id=p_cid)
 
                     # 3. Update session live history
                     st.session_state.enrollment_live_history.insert(0, (current_student['row_num'], list(payload)))
@@ -2100,11 +2415,14 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
                 ]
 
                 try:
+                    p_cid = current_student.get("call_id", "3300")
+                    current_student["call_status"] = "Done"
+
                     # 1. Update in-memory session rows immediately (Sub-millisecond)
-                    update_in_memory_enrollment_row(current_student['row_num'], payload)
+                    update_in_memory_enrollment_row(current_student['row_num'], payload, call_status="Done", call_id=p_cid)
 
                     # 2. Asynchronous background sync to Google Sheets & local CSV
-                    dispatch_enrollment_sync(enrollment_ws, current_student['row_num'], payload)
+                    dispatch_enrollment_sync(enrollment_ws, current_student['row_num'], payload, call_status="Done", call_id=p_cid)
 
                     # 3. Update session live history
                     st.session_state.enrollment_live_history.insert(0, (current_student['row_num'], list(payload)))
