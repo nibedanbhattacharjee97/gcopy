@@ -1469,7 +1469,7 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
     # ==========================================================================
     view_options = ["🌟 All Team Combined (Portal Total)"] + all_spocs
 
-    col_view_lbl, col_view_sel = st.columns([1.5, 2.5])
+    col_view_lbl, col_view_sel, col_view_cid = st.columns([1.3, 1.6, 1.4])
     with col_view_lbl:
         st.markdown("<div style='padding-top: 6px; font-weight: 800; color: #0f4c81; font-size: 1.05rem;'>📊 Select Performance View:</div>", unsafe_allow_html=True)
     with col_view_sel:
@@ -1494,14 +1494,34 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
     # Compute stats based on selected view
     if selected_perf_view == "🌟 All Team Combined (Portal Total)":
         display_scope_name = "All Team Combined"
-        scoped_students = [dict(s) for s in all_placement_students]
-        for i, s in enumerate(scoped_students):
-            s["queue_index"] = i
+        raw_scoped = [dict(s) for s in all_placement_students]
     else:
         display_scope_name = selected_perf_view
-        scoped_students = [dict(s) for s in all_placement_students if s["called_by"].strip().lower() == selected_perf_view.strip().lower()]
-        for i, s in enumerate(scoped_students):
-            s["queue_index"] = i
+        raw_scoped = [dict(s) for s in all_placement_students if s["called_by"].strip().lower() == selected_perf_view.strip().lower()]
+
+    view_cids = sorted(list({str(s.get("call_id", "")).strip() for s in raw_scoped if str(s.get("call_id", "")).strip()}))
+    for def_cid in ["1000", "1153"]:
+        if def_cid not in view_cids and any(str(s.get("call_id", "")).strip() == def_cid for s in all_placement_students):
+            view_cids.append(def_cid)
+    view_cids = sorted(view_cids)
+    cid_board_options = ["All Call IDs"] + view_cids
+
+    with col_view_cid:
+        selected_board_cid = st.selectbox(
+            "🏷️ Scope by Call ID",
+            cid_board_options,
+            index=0,
+            key=f"plc_board_cid_{selected_perf_view}"
+        )
+
+    if selected_board_cid != "All Call IDs":
+        scoped_students = [s for s in raw_scoped if str(s.get("call_id", "")).strip() == selected_board_cid]
+        display_scope_name = f"{display_scope_name} ({selected_board_cid})"
+    else:
+        scoped_students = raw_scoped
+
+    for i, s in enumerate(scoped_students):
+        s["queue_index"] = i
 
     # Active Queue determination (prioritized so popover components have full access)
     if is_admin and selected_perf_view != "🌟 All Team Combined (Portal Total)":
