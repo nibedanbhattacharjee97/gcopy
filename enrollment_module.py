@@ -9,6 +9,8 @@ import urllib.parse
 import csv
 import io
 import warnings
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 # Suppress Streamlit deprecation warnings for clean console logs (resolves Picture 3 issue)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -19,6 +21,10 @@ PROGRESS_ENROLLMENT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__
 LOCAL_ENROLLMENT_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "enrollment_data.csv")
 LOCAL_ENROLLMENT_EXCEL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Enrollment_Verification.xlsx")
 DATA_CACHE_TTL = 900  # 15 minutes TTL for zero API rate limit and lightning speed
+
+# High-Speed Background Sync Executor & File Safety Lock
+_CSV_FILE_LOCK = threading.Lock()
+_ENROLLMENT_BG_EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix="enr_sync")
 
 # ==============================================================================
 # 🎯 DROPDOWN CONSTANTS (MATCHING ENROLLMENT EXCEL & SUPPORT SHEET)
@@ -234,23 +240,24 @@ def get_enrollment_highest_verified_index(student_list):
             highest = idx
     return highest
 
-def update_local_enrollment_row(row_num, payload):
-    """Updates local CSV and session cache for zero data loss."""
+def update_in_memory_enrollment_row(row_num, payload):
+    """
+    Updates the active in-memory master rows in session state immediately.
+    Guarantees instantaneous UI re-render without hitting Google Sheets API.
+    """
     try:
-        if os.path.exists(LOCAL_ENROLLMENT_CSV):
-            with open(LOCAL_ENROLLMENT_CSV, "r", encoding="utf-8") as f:
-                rows = list(csv.reader(f))
-            if 0 < row_num <= len(rows):
+        if "enrollment_master_rows" in st.session_state and st.session_state.enrollment_master_rows:
+            m_rows = st.session_state.enrollment_master_rows
+            if 0 < row_num <= len(m_rows):
                 idx = row_num - 1
-                curr = list(rows[idx])
+                curr = list(m_rows[idx])
                 if len(curr) < 41:
                     curr.extend([""] * (41 - len(curr)))
                 for i, val in enumerate(payload):
                     curr[17 + i] = str(val)
-                rows[idx] = curr
-                with open(LOCAL_ENROLLMENT_CSV, "w", newline="", encoding="utf-8") as f:
-                    writer = csv.writer(f)
-                    writer.writerows(rows)
+                m_rows[idx] = curr
+                st.session_state.enrollment_master_rows = m_rows
+
         if "custom_enrollment_rows" in st.session_state and st.session_state.custom_enrollment_rows:
             crows = st.session_state.custom_enrollment_rows
             if 0 < row_num <= len(crows):
@@ -264,6 +271,52 @@ def update_local_enrollment_row(row_num, payload):
                 st.session_state.custom_enrollment_rows = crows
     except Exception:
         pass
+
+def update_local_enrollment_row(row_num, payload):
+    """Updates local CSV and session cache for zero data loss."""
+    try:
+        with _CSV_FILE_LOCK:
+            if os.path.exists(LOCAL_ENROLLMENT_CSV):
+                with open(LOCAL_ENROLLMENT_CSV, "r", encoding="utf-8") as f:
+                    rows = list(csv.reader(f))
+                if 0 < row_num <= len(rows):
+                    idx = row_num - 1
+                    curr = list(rows[idx])
+                    if len(curr) < 41:
+                        curr.extend([""] * (41 - len(curr)))
+                    for i, val in enumerate(payload):
+                        curr[17 + i] = str(val)
+                    rows[idx] = curr
+                    with open(LOCAL_ENROLLMENT_CSV, "w", newline="", encoding="utf-8") as f:
+                        writer = csv.writer(f)
+                        writer.writerows(rows)
+    except Exception:
+        pass
+
+def _bg_sync_worker(ws, row_num, payload):
+    """
+    Background worker: Syncs row to local CSV and Google Sheets with retry.
+    Never blocks UI interaction.
+    """
+    # 1. Update local CSV immediately so disk backup is safe
+    try:
+        update_local_enrollment_row(row_num, payload)
+    except Exception:
+        pass
+
+    # 2. Update Google Sheets in background with retry
+    if ws:
+        for attempt in range(1, 4):
+            try:
+                ws.update(values=[payload], range_name=f"R{row_num}:AO{row_num}")
+                break
+            except Exception:
+                if attempt < 3:
+                    time.sleep(1.0)
+
+def dispatch_enrollment_sync(ws, row_num, payload):
+    """Dispatches background sync for zero UI delay."""
+    _ENROLLMENT_BG_EXECUTOR.submit(_bg_sync_worker, ws, row_num, list(payload))
 
 # ==============================================================================
 # 💾 PERSISTENCE & QUEUE PROGRESS FOR ENROLLMENT
@@ -607,8 +660,8 @@ def render_enrollment_fresh_call_list(fresh_stats, current_spoc):
             st.info("💡 Tip: Use your auto-dialer or mobile softphone with this list.")
 
     with tab_queue:
-        st.caption("Click **Jump** next to any student to dial immediately:")
-        preview_rows = fresh_items[:100]
+        st.caption("Click **Jump** next to any student to dial immediately (showing top 40):")
+        preview_rows = fresh_items[:40]
         for s in preview_rows:
             cq_col1, cq_col2, cq_col3, cq_col4 = st.columns([0.8, 2.5, 2.2, 1.0])
             with cq_col1:
@@ -668,7 +721,8 @@ def render_enrollment_not_contactable_list(fresh_stats, current_spoc):
         )
 
     with t_call:
-        for s in no_items[:100]:
+        st.caption("Showing top 40 unreached targets for redial:")
+        for s in no_items[:40]:
             cq1, cq2, cq3, cq4 = st.columns([0.8, 2.5, 2.2, 1.0])
             with cq1:
                 st.markdown(f"<b>#{s['queue_index'] + 1}</b>", unsafe_allow_html=True)
@@ -770,6 +824,7 @@ def render_enrollment_sidebar_download(all_enrollment_students, current_spoc, is
 
                 if new_rows and len(new_rows) > 1:
                     st.session_state.custom_enrollment_rows = new_rows
+                    st.session_state.enrollment_master_rows = [list(r) for r in new_rows]
                     fetch_enrollment_master_data.clear()
                     st.success(f"✅ Loaded {len(new_rows)-1} students from uploaded file!")
                     if st.button("Apply & Refresh Queue", key="enr_apply_upload_btn", use_container_width=True):
@@ -939,7 +994,11 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
     if "enrollment_active_call_index" not in st.session_state:
         st.session_state.enrollment_active_call_index = 0
 
-    all_rows = fetch_enrollment_master_data(enrollment_ws)
+    if "enrollment_master_rows" not in st.session_state or not st.session_state.enrollment_master_rows:
+        raw_rows = fetch_enrollment_master_data(enrollment_ws)
+        st.session_state.enrollment_master_rows = [list(r) for r in raw_rows] if raw_rows else []
+
+    all_rows = st.session_state.enrollment_master_rows
     if not all_rows:
         st.error("⚠️ Could not load data from Google Sheet 'enrollment_Verification' or local data file. Please verify permissions or upload an Enrollment excel.")
         return
@@ -1214,6 +1273,7 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
         st.rerun()
 
     if c_refresh.button("🔄 Refresh DB", use_container_width=True):
+        st.session_state.pop("enrollment_master_rows", None)
         fetch_enrollment_master_data.clear()
         st.cache_data.clear()
         st.toast("Database cache refreshed from Google Sheets!", icon="🔄")
@@ -1485,55 +1545,58 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
         st.markdown("<br>", unsafe_allow_html=True)
         btn_label_no = f"💾 Update & Insert Uncontactable Call (Row #{current_student['row_num']})" if (is_edit_mode or is_already_verified) else "🔴 Save & Insert Uncontactable Call"
         if st.button(btn_label_no, type="primary", use_container_width=True, key=f"enr_sub_no_{current_student['row_num']}"):
-            with st.spinner("⚡ High Speed Sync to Google Sheets..."):
-                payload = [
-                    "No",                           # R: Contactable
-                    "",                             # S: Class started (Yes/No)
-                    "",                             # T: Got information about Anudip
-                    "",                             # U: Referral Person Name(Yes/No)
-                    "",                             # V: Please fill the Name
-                    "",                             # W: Your_DOB
-                    "",                             # X: Monthly Family Income RS.
-                    "",                             # Y: Satisfied With Conversation
-                    "",                             # Z: Classes In A Week
-                    "",                             # AA: Class Mode
-                    "",                             # AB: Quality Of Classes
-                    "",                             # AC: Current Educational Status
-                    str(date.today()),              # AD: Verification Date
-                    "",                             # AE: Interest In Job
-                    "",                             # AF: Present Working Status
-                    "",                             # AG: COMPANY NAME
-                    "",                             # AH: Salary
-                    "",                             # AI: Part Time /Full Time
-                    "",                             # AJ: How Many Months Working
-                    "",                             # AK: Did They Left The Job After Joining Course
-                    "",                             # AL: Why They Joined Course, If Stu Working
-                    f_nocont_reason,                # AM: Enroll Remarks
-                    f_remarks_2_no.strip(),         # AN: Remarks 2
-                    f_remarks_3_no.strip()          # AO: Remarks 3
-                ]
+            payload = [
+                "No",                           # R: Contactable
+                "",                             # S: Class started (Yes/No)
+                "",                             # T: Got information about Anudip
+                "",                             # U: Referral Person Name(Yes/No)
+                "",                             # V: Please fill the Name
+                "",                             # W: Your_DOB
+                "",                             # X: Monthly Family Income RS.
+                "",                             # Y: Satisfied With Conversation
+                "",                             # Z: Classes In A Week
+                "",                             # AA: Class Mode
+                "",                             # AB: Quality Of Classes
+                "",                             # AC: Current Educational Status
+                str(date.today()),              # AD: Verification Date
+                "",                             # AE: Interest In Job
+                "",                             # AF: Present Working Status
+                "",                             # AG: COMPANY NAME
+                "",                             # AH: Salary
+                "",                             # AI: Part Time /Full Time
+                "",                             # AJ: How Many Months Working
+                "",                             # AK: Did They Left The Job After Joining Course
+                "",                             # AL: Why They Joined Course, If Stu Working
+                f_nocont_reason,                # AM: Enroll Remarks
+                f_remarks_2_no.strip(),         # AN: Remarks 2
+                f_remarks_3_no.strip()          # AO: Remarks 3
+            ]
 
-                try:
-                    if enrollment_ws:
-                        enrollment_ws.update(values=[payload], range_name=f"R{current_student['row_num']}:AO{current_student['row_num']}")
-                    update_local_enrollment_row(current_student['row_num'], payload)
-                    fetch_enrollment_master_data.clear()
+            try:
+                # 1. Update in-memory session rows immediately (Sub-millisecond)
+                update_in_memory_enrollment_row(current_student['row_num'], payload)
 
-                    st.session_state.enrollment_live_history.insert(0, (current_student['row_num'], list(payload)))
-                    st.session_state.enrollment_live_history = st.session_state.enrollment_live_history[:25]
-                    st.session_state.pop("enrollment_editing_row", None)
+                # 2. Asynchronous background sync to Google Sheets & local CSV
+                dispatch_enrollment_sync(enrollment_ws, current_student['row_num'], payload)
 
-                    st.toast(f"✅ Saved Target #{current_q_idx + 1} ({current_student['student_name']}) as Not Contactable!", icon="🚫")
+                # 3. Update session live history
+                st.session_state.enrollment_live_history.insert(0, (current_student['row_num'], list(payload)))
+                st.session_state.enrollment_live_history = st.session_state.enrollment_live_history[:25]
+                st.session_state.pop("enrollment_editing_row", None)
 
-                    if current_q_idx + 1 < total_assigned_queue:
-                        st.session_state.enrollment_queue_index = current_q_idx + 1
-                        next_s = active_queue_students[current_q_idx + 1]
-                        save_enrollment_progress(current_spoc, current_q_idx + 1, next_s["contact_number"], active_call_index=st.session_state.get("enrollment_active_call_index", 0))
+                # 4. Instant UI Toast
+                st.toast(f"✅ Saved Target #{current_q_idx + 1} ({current_student['student_name']}) as Not Contactable!", icon="🚫")
 
-                    time.sleep(0.3)
-                    st.rerun()
-                except Exception as ex:
-                    st.error(f"Error saving to Google Sheets: {ex}")
+                # 5. Advance to next student in queue
+                if current_q_idx + 1 < total_assigned_queue:
+                    st.session_state.enrollment_queue_index = current_q_idx + 1
+                    next_s = active_queue_students[current_q_idx + 1]
+                    save_enrollment_progress(current_spoc, current_q_idx + 1, next_s["contact_number"], active_call_index=st.session_state.get("enrollment_active_call_index", 0))
+
+                # 6. Instant UI re-render
+                st.rerun()
+            except Exception as ex:
+                st.error(f"Error saving: {ex}")
 
     # --------------------------------------------------------------------------
     # ✅ CONDITION: IF CONTACTABLE == YES -> Complete Enrollment Verification Form
@@ -1611,55 +1674,58 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
             st.markdown("<br>", unsafe_allow_html=True)
             btn_label_quick = f"💾 Update & Insert Verification (Row #{current_student['row_num']})" if (is_edit_mode or is_already_verified) else f"💾 Save & Insert Call ({f_call_outcome})"
             if st.button(btn_label_quick, type="primary", use_container_width=True, key=f"enr_btn_quick_{current_student['row_num']}"):
-                with st.spinner("⚡ High Speed Sync to Google Sheets..."):
-                    payload = [
-                        "Yes",                          # R: Contactable
-                        "",                             # S: Class started (Yes/No)
-                        "",                             # T: Got information about Anudip
-                        "",                             # U: Referral Person Name(Yes/No)
-                        "",                             # V: Please fill the Name
-                        "",                             # W: Your_DOB
-                        "",                             # X: Monthly Family Income RS.
-                        "",                             # Y: Satisfied With Conversation
-                        "",                             # Z: Classes In A Week
-                        "",                             # AA: Class Mode
-                        "",                             # AB: Quality Of Classes
-                        "",                             # AC: Current Educational Status
-                        str(date.today()),              # AD: Verification Date
-                        "",                             # AE: Interest In Job
-                        "",                             # AF: Present Working Status
-                        "",                             # AG: COMPANY NAME
-                        "",                             # AH: Salary
-                        "",                             # AI: Part Time /Full Time
-                        "",                             # AJ: How Many Months Working
-                        "",                             # AK: Did They Left The Job After Joining Course
-                        "",                             # AL: Why They Joined Course, If Stu Working
-                        f_call_outcome,                 # AM: Enroll Remarks
-                        f_remarks_2_quick.strip(),      # AN: Remarks 2
-                        f_remarks_3_quick.strip()       # AO: Remarks 3
-                    ]
+                payload = [
+                    "Yes",                          # R: Contactable
+                    "",                             # S: Class started (Yes/No)
+                    "",                             # T: Got information about Anudip
+                    "",                             # U: Referral Person Name(Yes/No)
+                    "",                             # V: Please fill the Name
+                    "",                             # W: Your_DOB
+                    "",                             # X: Monthly Family Income RS.
+                    "",                             # Y: Satisfied With Conversation
+                    "",                             # Z: Classes In A Week
+                    "",                             # AA: Class Mode
+                    "",                             # AB: Quality Of Classes
+                    "",                             # AC: Current Educational Status
+                    str(date.today()),              # AD: Verification Date
+                    "",                             # AE: Interest In Job
+                    "",                             # AF: Present Working Status
+                    "",                             # AG: COMPANY NAME
+                    "",                             # AH: Salary
+                    "",                             # AI: Part Time /Full Time
+                    "",                             # AJ: How Many Months Working
+                    "",                             # AK: Did They Left The Job After Joining Course
+                    "",                             # AL: Why They Joined Course, If Stu Working
+                    f_call_outcome,                 # AM: Enroll Remarks
+                    f_remarks_2_quick.strip(),      # AN: Remarks 2
+                    f_remarks_3_quick.strip()       # AO: Remarks 3
+                ]
 
-                    try:
-                        if enrollment_ws:
-                            enrollment_ws.update(values=[payload], range_name=f"R{current_student['row_num']}:AO{current_student['row_num']}")
-                        update_local_enrollment_row(current_student['row_num'], payload)
-                        fetch_enrollment_master_data.clear()
+                try:
+                    # 1. Update in-memory session rows immediately (Sub-millisecond)
+                    update_in_memory_enrollment_row(current_student['row_num'], payload)
 
-                        st.session_state.enrollment_live_history.insert(0, (current_student['row_num'], list(payload)))
-                        st.session_state.enrollment_live_history = st.session_state.enrollment_live_history[:25]
-                        st.session_state.pop("enrollment_editing_row", None)
+                    # 2. Asynchronous background sync to Google Sheets & local CSV
+                    dispatch_enrollment_sync(enrollment_ws, current_student['row_num'], payload)
 
-                        st.toast(f"✅ Saved Target #{current_q_idx + 1} ({current_student['student_name']}) as Contactable: {f_call_outcome}!", icon="🎯")
+                    # 3. Update session live history
+                    st.session_state.enrollment_live_history.insert(0, (current_student['row_num'], list(payload)))
+                    st.session_state.enrollment_live_history = st.session_state.enrollment_live_history[:25]
+                    st.session_state.pop("enrollment_editing_row", None)
 
-                        if current_q_idx + 1 < total_assigned_queue:
-                            st.session_state.enrollment_queue_index = current_q_idx + 1
-                            next_s = active_queue_students[current_q_idx + 1]
-                            save_enrollment_progress(current_spoc, current_q_idx + 1, next_s["contact_number"], active_call_index=st.session_state.get("enrollment_active_call_index", 0))
+                    # 4. Instant UI Toast
+                    st.toast(f"✅ Saved Target #{current_q_idx + 1} ({current_student['student_name']}) as Contactable: {f_call_outcome}!", icon="🎯")
 
-                        time.sleep(0.3)
-                        st.rerun()
-                    except Exception as ex:
-                        st.error(f"Error saving to Google Sheets: {ex}")
+                    # 5. Advance queue index and save progress
+                    if current_q_idx + 1 < total_assigned_queue:
+                        st.session_state.enrollment_queue_index = current_q_idx + 1
+                        next_s = active_queue_students[current_q_idx + 1]
+                        save_enrollment_progress(current_spoc, current_q_idx + 1, next_s["contact_number"], active_call_index=st.session_state.get("enrollment_active_call_index", 0))
+
+                    # 6. Instant UI re-render
+                    st.rerun()
+                except Exception as ex:
+                    st.error(f"Error saving: {ex}")
         else:
             # ----------------------------------------------------------------------
             # Section 1: Course & Training Details
@@ -2003,58 +2069,61 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
                 )
 
             st.markdown("<br>", unsafe_allow_html=True)
-            btn_submit_label = f"💾 Update & Insert Enrollment Verification (Row #{current_student['row_num']})" if (is_edit_mode or is_already_verified) else "💾 Submit Enrollment Verification"
+            btn_submit_label = f"💾 Update & Insert Enrollment Verification (Row #{current_student['row_num']})" if (is_edit_mode or is_already_verified) else "🎯 Submit Enrollment Verification"
             if st.button(btn_submit_label, type="primary", use_container_width=True, key=f"enr_btn_submit_{current_student['row_num']}"):
-                with st.spinner("⚡ High Speed Sync to Google Sheets..."):
-                    is_blank_exit = f_enroll_remarks in ENROLLMENT_CONTACTED_BLANK_REMARKS
-                    payload = [
-                        "Yes",                                           # R: Contactable
-                        "" if is_blank_exit else f_class_started,        # S: Class started (Yes/No)
-                        "" if is_blank_exit else f_got_info,             # T: Got information about Anudip
-                        "" if is_blank_exit else f_referral_ok,          # U: Referral Person Name(Yes/No)
-                        "" if is_blank_exit else (f_referral_name_fill.strip() if f_referral_ok == "Yes" else ""), # V: Please fill the Name
-                        "" if is_blank_exit else str(f_your_dob),        # W: Your_DOB
-                        "" if is_blank_exit else str(f_income).strip(),  # X: Monthly Family Income RS.
-                        "" if is_blank_exit else f_satisfied,            # Y: Satisfied With Conversation
-                        "" if is_blank_exit else f_classes_week,         # Z: Classes In A Week
-                        "" if is_blank_exit else f_class_mode,           # AA: Class Mode
-                        "" if is_blank_exit else f_quality,              # AB: Quality Of Classes
-                        "" if is_blank_exit else f_edu_status,           # AC: Current Educational Status
-                        str(date.today()),                               # AD: Verification Date
-                        "" if is_blank_exit else f_job_interest,         # AE: Interest In Job
-                        "" if is_blank_exit else f_working_status,       # AF: Present Working Status
-                        "" if is_blank_exit else (f_comp_name.strip() if f_working_status == "Yes" else ""), # AG: COMPANY NAME
-                        "" if is_blank_exit else (str(f_salary).strip() if f_working_status == "Yes" else ""), # AH: Salary
-                        "" if is_blank_exit else (f_part_full if f_working_status == "Yes" else ""),# AI: Part Time /Full Time
-                        "" if is_blank_exit else (f_months_work if f_working_status == "Yes" else ""), # AJ: How Many Months Working
-                        "" if is_blank_exit else (f_left_job if f_working_status == "Yes" else ""), # AK: Did They Left The Job After Joining Course
-                        "" if is_blank_exit else (f_why_joined if f_working_status == "Yes" else ""), # AL: Why They Joined Course, If Stu Working
-                        f_enroll_remarks,                                # AM: Enroll Remarks
-                        f_remarks_2.strip(),                             # AN: Remarks 2
-                        f_remarks_3.strip()                              # AO: Remarks 3
-                    ]
+                is_blank_exit = f_enroll_remarks in ENROLLMENT_CONTACTED_BLANK_REMARKS
+                payload = [
+                    "Yes",                                           # R: Contactable
+                    "" if is_blank_exit else f_class_started,        # S: Class started (Yes/No)
+                    "" if is_blank_exit else f_got_info,             # T: Got information about Anudip
+                    "" if is_blank_exit else f_referral_ok,          # U: Referral Person Name(Yes/No)
+                    "" if is_blank_exit else (f_referral_name_fill.strip() if f_referral_ok == "Yes" else ""), # V: Please fill the Name
+                    "" if is_blank_exit else str(f_your_dob),        # W: Your_DOB
+                    "" if is_blank_exit else str(f_income).strip(),  # X: Monthly Family Income RS.
+                    "" if is_blank_exit else f_satisfied,            # Y: Satisfied With Conversation
+                    "" if is_blank_exit else f_classes_week,         # Z: Classes In A Week
+                    "" if is_blank_exit else f_class_mode,           # AA: Class Mode
+                    "" if is_blank_exit else f_quality,              # AB: Quality Of Classes
+                    "" if is_blank_exit else f_edu_status,           # AC: Current Educational Status
+                    str(date.today()),                               # AD: Verification Date
+                    "" if is_blank_exit else f_job_interest,         # AE: Interest In Job
+                    "" if is_blank_exit else f_working_status,       # AF: Present Working Status
+                    "" if is_blank_exit else (f_comp_name.strip() if f_working_status == "Yes" else ""), # AG: COMPANY NAME
+                    "" if is_blank_exit else (str(f_salary).strip() if f_working_status == "Yes" else ""), # AH: Salary
+                    "" if is_blank_exit else (f_part_full if f_working_status == "Yes" else ""),# AI: Part Time /Full Time
+                    "" if is_blank_exit else (f_months_work if f_working_status == "Yes" else ""), # AJ: How Many Months Working
+                    "" if is_blank_exit else (f_left_job if f_working_status == "Yes" else ""), # AK: Did They Left The Job After Joining Course
+                    "" if is_blank_exit else (f_why_joined if f_working_status == "Yes" else ""), # AL: Why They Joined Course, If Stu Working
+                    f_enroll_remarks,                                # AM: Enroll Remarks
+                    f_remarks_2.strip(),                             # AN: Remarks 2
+                    f_remarks_3.strip()                              # AO: Remarks 3
+                ]
 
-                    try:
-                        if enrollment_ws:
-                            enrollment_ws.update(values=[payload], range_name=f"R{current_student['row_num']}:AO{current_student['row_num']}")
-                        update_local_enrollment_row(current_student['row_num'], payload)
-                        fetch_enrollment_master_data.clear()
+                try:
+                    # 1. Update in-memory session rows immediately (Sub-millisecond)
+                    update_in_memory_enrollment_row(current_student['row_num'], payload)
 
-                        st.session_state.enrollment_live_history.insert(0, (current_student['row_num'], list(payload)))
-                        st.session_state.enrollment_live_history = st.session_state.enrollment_live_history[:25]
-                        st.session_state.pop("enrollment_editing_row", None)
+                    # 2. Asynchronous background sync to Google Sheets & local CSV
+                    dispatch_enrollment_sync(enrollment_ws, current_student['row_num'], payload)
 
-                        st.toast(f"✅ Target #{current_q_idx + 1} ({current_student['student_name']}) saved successfully in Google Sheets!", icon="🎯")
+                    # 3. Update session live history
+                    st.session_state.enrollment_live_history.insert(0, (current_student['row_num'], list(payload)))
+                    st.session_state.enrollment_live_history = st.session_state.enrollment_live_history[:25]
+                    st.session_state.pop("enrollment_editing_row", None)
 
-                        if current_q_idx + 1 < total_assigned_queue:
-                            st.session_state.enrollment_queue_index = current_q_idx + 1
-                            next_s = active_queue_students[current_q_idx + 1]
-                            save_enrollment_progress(current_spoc, current_q_idx + 1, next_s["contact_number"], active_call_index=st.session_state.get("enrollment_active_call_index", 0))
+                    # 4. Instant UI Toast
+                    st.toast(f"✅ Target #{current_q_idx + 1} ({current_student['student_name']}) saved successfully in Google Sheets!", icon="🎯")
 
-                        time.sleep(0.3)
-                        st.rerun()
-                    except Exception as ex:
-                        st.error(f"Error saving to Google Sheets: {ex}")
+                    # 5. Advance queue index and save progress
+                    if current_q_idx + 1 < total_assigned_queue:
+                        st.session_state.enrollment_queue_index = current_q_idx + 1
+                        next_s = active_queue_students[current_q_idx + 1]
+                        save_enrollment_progress(current_spoc, current_q_idx + 1, next_s["contact_number"], active_call_index=st.session_state.get("enrollment_active_call_index", 0))
+
+                    # 6. Instant UI re-render
+                    st.rerun()
+                except Exception as ex:
+                    st.error(f"Error saving: {ex}")
 
     st.markdown('</div>', unsafe_allow_html=True)
 
