@@ -200,7 +200,11 @@ def parse_date_safe(d_val):
     return None
 
 def normalize_tri_val(val, default="Yes"):
-    v = (val or "").strip()
+    if val is None:
+        return default
+    v = str(val).strip()
+    if not v:
+        return default
     if any(k in v.upper() for k in ["DONT", "DON'T", "DIDNT", "DIDN'T", "REFUSE", "SHARE"]):
         return "Don't Share"
     if v.upper() == "NO":
@@ -1866,8 +1870,8 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
 
             with col_w2:
                 st.markdown('<div class="question-pill-header">13. Present Working Status (Currently Employed)?</div>', unsafe_allow_html=True)
-                def_ws_val = row_preset.get("present_working_status", current_student["present_working_status"]).strip().capitalize()
-                def_ws_idx = 0 if def_ws_val == "Yes" else (1 if def_ws_val == "No" else 2)
+                def_ws_val = row_preset.get("present_working_status", current_student["present_working_status"])
+                def_ws_idx = get_tri_option_index(def_ws_val, default="Yes")
                 f_working_status = st.radio(
                     "Present Working Status",
                     ["Yes", "No", "dont share"],
