@@ -663,12 +663,12 @@ def render_placement_fresh_call_list(fresh_stats, current_spoc, all_placement_st
             ]
 
         st.caption(f"Showing **{min(len(filtered), 50)}** of **{len(filtered)}** pending calls:")
-        for it in filtered[:50]:
+        for f_idx, it in enumerate(filtered[:50]):
             col_i1, col_i2 = st.columns([3, 1.2])
             with col_i1:
                 st.markdown(f"**Target #{it.get('queue_index', 0)+1}**: `{it['contact_number']}` &nbsp;·&nbsp; *{it['student_name']}* ({it.get('company_name', '')})")
             with col_i2:
-                if st.button("📞 Load", key=f"plc_btn_ld_{it['row_num']}_{key_prefix}", use_container_width=True):
+                if st.button("📞 Load", key=f"plc_btn_ld_{f_idx}_{it['row_num']}_{key_prefix}", use_container_width=True):
                     # Locate student in active_queue_students by row_num
                     target_idx = None
                     if active_queue_students:
@@ -795,7 +795,7 @@ def render_placement_not_contactable_list(fresh_stats, current_spoc, all_placeme
 
         st.caption(f"Showing **{min(len(filtered), 50)}** of **{len(filtered)}** calls ready for Re-Call:")
 
-        for it in filtered[:50]:
+        for r_idx, it in enumerate(filtered[:50]):
             c1, c2 = st.columns([3, 1.2])
             r_num = it["row_num"]
             reason_display = it.get("left_not_working_remarks", "").strip() or "Not Contactable"
@@ -806,7 +806,7 @@ def render_placement_not_contactable_list(fresh_stats, current_spoc, all_placeme
                     unsafe_allow_html=True
                 )
             with c2:
-                if st.button("🔁 Re-Call", key=f"plc_recall_{r_num}_{key_prefix}", use_container_width=True):
+                if st.button("🔁 Re-Call", key=f"plc_recall_{r_idx}_{r_num}_{key_prefix}", use_container_width=True):
                     # 1. Locate student in active_queue_students by row_num
                     target_idx = None
                     if active_queue_students:
@@ -2552,7 +2552,10 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                     # 2. Asynchronous background sync to Google Sheets (Zero UI wait)
                     dispatch_placement_sync(placement_ws, current_student['row_num'], payload, call_status="Done", call_id=p_cid, concat=p_concat)
 
-                    # 3. Update session live history
+                    # 3. Update session live history (deduplicated by row_num)
+                    st.session_state.placement_live_history = [
+                        item for item in st.session_state.placement_live_history if item[0] != current_student['row_num']
+                    ]
                     st.session_state.placement_live_history.insert(0, (current_student['row_num'], list(payload)))
                     st.session_state.placement_live_history = st.session_state.placement_live_history[:20]
                     st.session_state.pop("placement_editing_row", None)
@@ -3098,7 +3101,10 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                         # 2. Asynchronous background sync to Google Sheets (Zero UI wait)
                         dispatch_placement_sync(placement_ws, current_student['row_num'], payload, call_status="Done", call_id=p_cid, concat=p_concat)
 
-                        # 3. Update session live history
+                        # 3. Update session live history (deduplicated by row_num)
+                        st.session_state.placement_live_history = [
+                            item for item in st.session_state.placement_live_history if item[0] != current_student['row_num']
+                        ]
                         st.session_state.placement_live_history.insert(0, (current_student['row_num'], list(payload)))
                         st.session_state.placement_live_history = st.session_state.placement_live_history[:20]
                         st.session_state.pop("placement_editing_row", None)
@@ -3130,6 +3136,14 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
     """.replace("{spoc_name}", display_scope_name), unsafe_allow_html=True)
 
     called_records = []
+    # Deduplicate live history in case of earlier duplicate session entries
+    seen_plc_hist = set()
+    unique_plc_hist = []
+    for r_num, pld in st.session_state.placement_live_history:
+        if r_num not in seen_plc_hist:
+            seen_plc_hist.add(r_num)
+            unique_plc_hist.append((r_num, pld))
+    st.session_state.placement_live_history = unique_plc_hist
     live_map = {r_num: r_data for r_num, r_data in st.session_state.placement_live_history}
 
     for s in active_queue_students:
@@ -3192,7 +3206,7 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
     if not latest_5:
         st.info("No verified calls completed yet in this session.")
     else:
-        for it in latest_5:
+        for p_idx, it in enumerate(latest_5):
             c_r1, c_r2, c_r3, c_r4 = st.columns([1, 3, 3, 1.2])
             with c_r1:
                 st.markdown(f"**Target #{it['target_num']}**")
@@ -3203,7 +3217,7 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                 st.markdown(f"*{it['company_name']}*<br><small style='color: #64748b;'>{it['retention'] or it['remarks'] or 'Verified'}</small>", unsafe_allow_html=True)
             with c_r4:
                 # ✏️ Edit Button: Loads previous verification form so user can view, update and insert!
-                if st.button("✏️ Edit", key=f"plc_edit_{it['row_num']}", use_container_width=True):
+                if st.button("✏️ Edit", key=f"plc_edit_{p_idx}_{it['row_num']}", use_container_width=True):
                     # Locate student index in active_queue_students
                     target_idx = None
                     for a_i, a_s in enumerate(active_queue_students):

@@ -851,7 +851,7 @@ def render_enrollment_fresh_call_list(fresh_stats, current_spoc):
     with tab_queue:
         st.caption("Click **Jump** next to any student to dial immediately (showing top 40):")
         preview_rows = fresh_items[:40]
-        for s in preview_rows:
+        for f_idx, s in enumerate(preview_rows):
             cq_col1, cq_col2, cq_col3, cq_col4 = st.columns([0.8, 2.5, 2.2, 1.0])
             with cq_col1:
                 st.markdown(f"<b>#{s['queue_index'] + 1}</b>", unsafe_allow_html=True)
@@ -861,7 +861,7 @@ def render_enrollment_fresh_call_list(fresh_stats, current_spoc):
                 p_c = clean_phone(s['contact_number'])
                 st.markdown(f"<a href='tel:{p_c}' style='color: #1a73e8; font-weight: 700; text-decoration: none;'>📞 {p_c}</a>", unsafe_allow_html=True)
             with cq_col4:
-                if st.button("Jump 🎯", key=f"enr_jump_fresh_{s['row_num']}", use_container_width=True):
+                if st.button("Jump 🎯", key=f"enr_jump_fresh_{f_idx}_{s['row_num']}", use_container_width=True):
                     st.session_state.enrollment_queue_index = s["queue_index"]
                     save_enrollment_progress(current_spoc, s["queue_index"], s["contact_number"], active_call_index=st.session_state.get("enrollment_active_call_index", 0))
                     st.rerun()
@@ -911,7 +911,7 @@ def render_enrollment_not_contactable_list(fresh_stats, current_spoc):
 
     with t_call:
         st.caption("Showing top 40 unreached targets for redial:")
-        for s in no_items[:40]:
+        for n_idx, s in enumerate(no_items[:40]):
             cq1, cq2, cq3, cq4 = st.columns([0.8, 2.5, 2.2, 1.0])
             with cq1:
                 st.markdown(f"<b>#{s['queue_index'] + 1}</b>", unsafe_allow_html=True)
@@ -922,7 +922,7 @@ def render_enrollment_not_contactable_list(fresh_stats, current_spoc):
                 p_c = clean_phone(s['contact_number'])
                 st.markdown(f"<a href='tel:{p_c}' style='color: #1a73e8; font-weight: 700; text-decoration: none;'>📞 {p_c}</a>", unsafe_allow_html=True)
             with cq4:
-                if st.button("Retry 🔄", key=f"enr_retry_no_{s['row_num']}", use_container_width=True):
+                if st.button("Retry 🔄", key=f"enr_retry_no_{n_idx}_{s['row_num']}", use_container_width=True):
                     st.session_state.enrollment_queue_index = s["queue_index"]
                     st.session_state.enrollment_editing_row = s["row_num"]
                     save_enrollment_progress(current_spoc, s["queue_index"], s["contact_number"], active_call_index=st.session_state.get("enrollment_active_call_index", 0))
@@ -2075,7 +2075,10 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
                 # 2. Asynchronous background sync to Google Sheets & local CSV
                 dispatch_enrollment_sync(enrollment_ws, current_student['row_num'], payload, call_status="Done", call_id=p_cid, concat=p_concat)
 
-                # 3. Update session live history
+                # 3. Update session live history (deduplicated by row_num)
+                st.session_state.enrollment_live_history = [
+                    item for item in st.session_state.enrollment_live_history if item[0] != current_student['row_num']
+                ]
                 st.session_state.enrollment_live_history.insert(0, (current_student['row_num'], list(payload)))
                 st.session_state.enrollment_live_history = st.session_state.enrollment_live_history[:25]
                 st.session_state.pop("enrollment_editing_row", None)
@@ -2209,7 +2212,10 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
                     # 2. Asynchronous background sync to Google Sheets & local CSV
                     dispatch_enrollment_sync(enrollment_ws, current_student['row_num'], payload, call_status="Done", call_id=p_cid, concat=p_concat)
 
-                    # 3. Update session live history
+                    # 3. Update session live history (deduplicated by row_num)
+                    st.session_state.enrollment_live_history = [
+                        item for item in st.session_state.enrollment_live_history if item[0] != current_student['row_num']
+                    ]
                     st.session_state.enrollment_live_history.insert(0, (current_student['row_num'], list(payload)))
                     st.session_state.enrollment_live_history = st.session_state.enrollment_live_history[:25]
                     st.session_state.pop("enrollment_editing_row", None)
@@ -2612,7 +2618,10 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
                     # 2. Asynchronous background sync to Google Sheets & local CSV
                     dispatch_enrollment_sync(enrollment_ws, current_student['row_num'], payload, call_status="Done", call_id=p_cid, concat=p_concat)
 
-                    # 3. Update session live history
+                    # 3. Update session live history (deduplicated by row_num)
+                    st.session_state.enrollment_live_history = [
+                        item for item in st.session_state.enrollment_live_history if item[0] != current_student['row_num']
+                    ]
                     st.session_state.enrollment_live_history.insert(0, (current_student['row_num'], list(payload)))
                     st.session_state.enrollment_live_history = st.session_state.enrollment_live_history[:25]
                     st.session_state.pop("enrollment_editing_row", None)
@@ -2644,7 +2653,16 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
             </div>
         """, unsafe_allow_html=True)
 
-        for hist_row_num, hist_payload in st.session_state.enrollment_live_history[:8]:
+        # Deduplicate history in case previous state contained duplicate rows
+        seen_hist = set()
+        unique_history = []
+        for r_num, pld in st.session_state.enrollment_live_history:
+            if r_num not in seen_hist:
+                seen_hist.add(r_num)
+                unique_history.append((r_num, pld))
+        st.session_state.enrollment_live_history = unique_history
+
+        for h_idx, (hist_row_num, hist_payload) in enumerate(st.session_state.enrollment_live_history[:8]):
             hist_student = next((s for s in all_enrollment_students if s["row_num"] == hist_row_num), None)
             if hist_student:
                 h_c1, h_c2, h_c3, h_c4 = st.columns([1.0, 2.8, 2.5, 1.2])
@@ -2664,7 +2682,7 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
                         stat_txt += f" • Working: {hist_payload[14]}"
                     st.markdown(f"<small style='color: #475569;'>{stat_txt}</small>", unsafe_allow_html=True)
                 with h_c4:
-                    if st.button("✏️ Edit", key=f"enr_edit_hist_{hist_row_num}", use_container_width=True):
+                    if st.button("✏️ Edit", key=f"enr_edit_hist_{h_idx}_{hist_row_num}", use_container_width=True):
                         # Find index in current active queue
                         match_q = next((i for i, s in enumerate(active_queue_students) if s["row_num"] == hist_row_num), None)
                         if match_q is not None:
