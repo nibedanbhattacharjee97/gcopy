@@ -764,14 +764,17 @@ def compute_enrollment_stats(students, live_history=None):
 
     for s in students:
         r_num = s["row_num"]
-        cont = live_map.get(r_num, s["contactable"].strip().lower())
+        c_status = s.get("call_status", "").strip().lower()
+        cont = live_map.get(r_num, s.get("contactable", "").strip().lower())
         if cont == "yes":
             yes_cnt += 1
         elif cont == "no":
             no_cnt += 1
-            no_list.append(s)
+            if c_status != "done":
+                no_list.append(s)
         else:
-            fresh_list.append(s)
+            if c_status != "done":
+                fresh_list.append(s)
 
     total_called = yes_cnt + no_cnt
     fresh_pending = len(fresh_list)
@@ -1528,7 +1531,8 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
         if active_cids_for_target:
             scoped_students = [s for s in raw_scoped if str(s.get("call_id", "")).strip() in active_cids_for_target]
         else:
-            scoped_students = raw_scoped
+            prog_students = [s for s in raw_scoped if s.get("call_status", "").strip().lower() != "done"]
+            scoped_students = prog_students if prog_students else raw_scoped
     else:
         scoped_students = [s for s in raw_scoped if str(s.get("call_id", "")).strip() == selected_board_cid]
         display_scope_name = f"{display_scope_name} ({selected_board_cid})"
