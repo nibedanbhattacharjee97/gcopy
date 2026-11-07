@@ -246,7 +246,7 @@ def set_placement_batch_lock(spoc_name, cid, is_locked=True):
     except Exception:
         pass
 
-def is_placement_batch_locked(spoc_name, cid, spoc_all_students):
+def is_placement_batch_locked(spoc_name, cid, spoc_all_students=None):
     """
     Checks if a Placement Call ID batch for a SPOC is locked.
     Returns True if explicitly locked in progress JSON OR if all assigned calls are Done.
@@ -255,9 +255,10 @@ def is_placement_batch_locked(spoc_name, cid, spoc_all_students):
     locked_set = get_placement_locked_batches(spoc_name)
     if cid_str in locked_set:
         return True
-    cid_students = [s for s in spoc_all_students if str(s.get("call_id", "")).strip() == cid_str]
-    if cid_students and all(s.get("call_status") == "Done" for s in cid_students):
-        return True
+    if spoc_all_students:
+        cid_students = [s for s in spoc_all_students if str(s.get("call_id", "")).strip() == cid_str]
+        if cid_students and all(s.get("call_status") == "Done" for s in cid_students):
+            return True
     return False
 
 def save_placement_progress(spoc_name, queue_index, phone="", active_call_index=None, locked_batches=None):
@@ -411,6 +412,17 @@ def _bg_placement_sync_worker(ws, row_num, payload, call_status="Done", call_id=
                 pass
     except Exception as e:
         print(f"[Placement BG Sync Error] row {row_num}: {e}")
+
+def _bg_batch_sheet_worker(ws, batch_updates):
+    try:
+        if ws and batch_updates:
+            chunk_size = 100
+            for i in range(0, len(batch_updates), chunk_size):
+                chunk = batch_updates[i:i + chunk_size]
+                ws.batch_update(chunk)
+            print(f"[Placement BG Sync] Updated {len(batch_updates)} rows in Google Sheets.")
+    except Exception as e:
+        print(f"[Placement BG Batch Sync Error]: {e}")
 
 def dispatch_placement_sync(ws, row_num, payload, call_status="Done", call_id="1153", concat=None):
     _PLACEMENT_BG_EXECUTOR.submit(_bg_placement_sync_worker, ws, row_num, list(payload), call_status, call_id, concat)
@@ -1560,7 +1572,7 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
     # ==========================================================================
     view_options = ["🌟 All Team Combined (Portal Total)"] + all_spocs
 
-    col_view_lbl, col_view_sel, col_view_cid = st.columns([1.3, 1.6, 1.4])
+    col_view_lbl, col_view_sel, col_view_cid, col_lock, col_prog = st.columns([1.1, 1.4, 1.3, 0.75, 0.75])
     with col_view_lbl:
         st.markdown("<div style='padding-top: 6px; font-weight: 800; color: #0f4c81; font-size: 1.05rem;'>📊 Select Performance View:</div>", unsafe_allow_html=True)
     with col_view_sel:
@@ -1602,12 +1614,8 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
     locked_cids_for_target = {c for c in view_cids if is_placement_batch_locked(spoc_target_name, c, spoc_all_for_target)}
     active_cids_for_target = [c for c in view_cids if c not in locked_cids_for_target]
 
-    if active_cids_for_target and locked_cids_for_target:
-        cid_board_options = ["🌟 Active Queue (Current Batches)"] + [
-            f"{c} ({'⏳ Active' if c in active_cids_for_target else '🔒 Locked'})" for c in view_cids
-        ] + ["🌐 All Batches (Including Locked)"]
-    else:
-        cid_board_options = ["All Call IDs"] + view_cids
+    # CLEAN Scope by Call ID: Exactly "All Call IDs" + clean Call IDs (e.g. 1153, 1000)
+    cid_board_options = ["All Call IDs"] + view_cids
 
     with col_view_cid:
         selected_board_cid = st.selectbox(
@@ -1617,17 +1625,134 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
             key=f"plc_board_cid_{selected_perf_view}"
         )
 
-    if selected_board_cid.startswith("🌟 Active Queue"):
-        scoped_students = [s for s in raw_scoped if str(s.get("call_id", "")).strip() in active_cids_for_target]
-        if not scoped_students:
+    # 2 ACTION BUTTONS: [ 🔒 Locked ] and [ ⏳ Progress ]
+    SUPER_ADMINS = {"kalpana", "pritam", "nibedan"}
+    current_user_clean = current_spoc.strip().lower()
+    is_super_admin = current_user_clean in SUPER_ADMINS
+
+    with col_lock:
+        st.markdown("<div style='font-size: 0.8rem; font-weight: 700; color: #475569; margin-bottom: 2px;'>Action</div>", unsafe_allow_html=True)
+        btn_lock_clicked = st.button("🔒 Locked", type="primary", key=f"plc_btn_lock_{selected_perf_view}", use_container_width=True, help="Lock campaign and mark all calls as Done")
+
+    with col_prog:
+        st.markdown("<div style='font-size: 0.8rem; font-weight: 700; color: #475569; margin-bottom: 2px;'>&nbsp;</div>", unsafe_allow_html=True)
+        btn_prog_clicked = st.button("⏳ Progress", key=f"plc_btn_prog_{selected_perf_view}", use_container_width=True, help="Reopen campaign back to Progress")
+
+    # Execution of Locked Action
+    if btn_lock_clicked:
+        if is_super_admin and selected_perf_view == "🌟 All Team Combined (Portal Total)":
+            if selected_board_cid == "All Call IDs":
+                target_students = all_placement_students
+                target_cids_to_lock = view_cids
+            else:
+                target_students = [s for s in all_placement_students if str(s.get("call_id", "")).strip() == selected_board_cid]
+                target_cids_to_lock = [selected_board_cid]
+            all_spoc_names = {s["called_by"].strip().lower() for s in target_students if s["called_by"].strip()}
+            for spk in all_spoc_names:
+                for c in target_cids_to_lock:
+                    set_placement_batch_lock(spk, c, True)
+            lock_msg = f"Admin Forcefully Locked {len(target_students)} calls across all SPOCs for {selected_board_cid}!"
+        else:
+            action_spoc = spoc_target_name.strip().lower() if is_super_admin else current_user_clean
+            if selected_board_cid == "All Call IDs":
+                target_students = [s for s in all_placement_students if s["called_by"].strip().lower() == action_spoc]
+                target_cids_to_lock = list({str(s.get("call_id", "")).strip() for s in target_students if str(s.get("call_id", "")).strip()})
+            else:
+                target_students = [s for s in all_placement_students if s["called_by"].strip().lower() == action_spoc and str(s.get("call_id", "")).strip() == selected_board_cid]
+                target_cids_to_lock = [selected_board_cid]
+            for c in target_cids_to_lock:
+                set_placement_batch_lock(action_spoc, c, True)
+            lock_msg = f"Locked {len(target_students)} calls for {action_spoc.title()} ({selected_board_cid})!"
+
+        updates_map = {}
+        batch_updates = []
+        for s in target_students:
+            s["call_status"] = "Done"
+            c_cid = str(s.get("call_id", "")).strip() or (selected_board_cid if selected_board_cid != "All Call IDs" else "1153")
+            spk_name = s["called_by"].strip()
+            c_concat = f"{spk_name}{c_cid}"
+            s["concat"] = c_concat
+            updates_map[s["row_num"]] = ([], "Done", c_cid, c_concat)
+            batch_updates.append({
+                'range': f'AH{s["row_num"]}:AJ{s["row_num"]}',
+                'values': [['Done', c_cid, c_concat]]
+            })
+
+        batch_update_in_memory_placement_rows(updates_map)
+        st.session_state.placement_queue_index = 0
+        save_placement_progress(current_spoc, 0)
+        if placement_ws and batch_updates:
+            _PLACEMENT_BG_EXECUTOR.submit(_bg_batch_sheet_worker, placement_ws, list(batch_updates))
+        st.toast(f"🔒 {lock_msg} All records marked DONE in Google Sheet!", icon="✅")
+        time.sleep(0.3)
+        st.rerun()
+
+    # Execution of Progress Action
+    if btn_prog_clicked:
+        if is_super_admin and selected_perf_view == "🌟 All Team Combined (Portal Total)":
+            if selected_board_cid == "All Call IDs":
+                target_students = all_placement_students
+                target_cids_to_unlock = view_cids
+            else:
+                target_students = [s for s in all_placement_students if str(s.get("call_id", "")).strip() == selected_board_cid]
+                target_cids_to_unlock = [selected_board_cid]
+            all_spoc_names = {s["called_by"].strip().lower() for s in target_students if s["called_by"].strip()}
+            for spk in all_spoc_names:
+                for c in target_cids_to_unlock:
+                    set_placement_batch_lock(spk, c, False)
+            prog_msg = f"Admin Forcefully Reopened {len(target_students)} calls across all SPOCs for {selected_board_cid} to Progress!"
+        else:
+            action_spoc = spoc_target_name.strip().lower() if is_super_admin else current_user_clean
+            if selected_board_cid == "All Call IDs":
+                target_students = [s for s in all_placement_students if s["called_by"].strip().lower() == action_spoc]
+                target_cids_to_unlock = list({str(s.get("call_id", "")).strip() for s in target_students if str(s.get("call_id", "")).strip()})
+            else:
+                target_students = [s for s in all_placement_students if s["called_by"].strip().lower() == action_spoc and str(s.get("call_id", "")).strip() == selected_board_cid]
+                target_cids_to_unlock = [selected_board_cid]
+            for c in target_cids_to_unlock:
+                set_placement_batch_lock(action_spoc, c, False)
+            prog_msg = f"Reopened {len(target_students)} calls for {action_spoc.title()} ({selected_board_cid}) to Progress!"
+
+        updates_map = {}
+        batch_updates = []
+        for s in target_students:
+            s["call_status"] = "Progress"
+            c_cid = str(s.get("call_id", "")).strip() or (selected_board_cid if selected_board_cid != "All Call IDs" else "1153")
+            spk_name = s["called_by"].strip()
+            c_concat = f"{spk_name}{c_cid}"
+            s["concat"] = c_concat
+            updates_map[s["row_num"]] = ([], "Progress", c_cid, c_concat)
+            batch_updates.append({
+                'range': f'AH{s["row_num"]}:AJ{s["row_num"]}',
+                'values': [['Progress', c_cid, c_concat]]
+            })
+
+        batch_update_in_memory_placement_rows(updates_map)
+        if placement_ws and batch_updates:
+            _PLACEMENT_BG_EXECUTOR.submit(_bg_batch_sheet_worker, placement_ws, list(batch_updates))
+        st.toast(f"⏳ {prog_msg} Updated to 'Progress' in Google Sheet!", icon="🔄")
+        time.sleep(0.3)
+        st.rerun()
+
+    if selected_board_cid == "All Call IDs":
+        if active_cids_for_target:
+            scoped_students = [s for s in raw_scoped if str(s.get("call_id", "")).strip() in active_cids_for_target]
+        else:
             scoped_students = raw_scoped
-        display_scope_name = f"{display_scope_name} (Active Batches)"
-    elif selected_board_cid in ["All Call IDs", "🌐 All Batches (Including Locked)"] or selected_board_cid.startswith("🌐 All Batches"):
-        scoped_students = raw_scoped
     else:
-        target_cid = selected_board_cid.split(" (")[0].strip()
-        scoped_students = [s for s in raw_scoped if str(s.get("call_id", "")).strip() == target_cid]
-        display_scope_name = f"{display_scope_name} ({target_cid})"
+        scoped_students = [s for s in raw_scoped if str(s.get("call_id", "")).strip() == selected_board_cid]
+        display_scope_name = f"{display_scope_name} ({selected_board_cid})"
+
+    # Clean inline batch status chip
+    if selected_board_cid != "All Call IDs":
+        is_cur_locked = is_placement_batch_locked(spoc_target_name, selected_board_cid, spoc_all_for_target)
+        c_tot = len([s for s in spoc_all_for_target if str(s.get("call_id", "")).strip() == selected_board_cid])
+        c_done = sum(1 for s in spoc_all_for_target if str(s.get("call_id", "")).strip() == selected_board_cid and s.get("call_status") == "Done")
+        c_prog = c_tot - c_done
+        if is_cur_locked:
+            st.markdown(f"<div style='font-size: 0.84rem; padding: 4px 10px; background: #dcfce7; border: 1.2px solid #86efac; border-radius: 6px; color: #166534; font-weight: 700; display: inline-block; margin-bottom: 10px;'>🔒 Batch <b>{selected_board_cid}</b>: LOCKED & COMPLETED ({c_tot}/{c_tot} Done) for {spoc_target_name.title()} &nbsp;|&nbsp; Concat: <code>{spoc_target_name.title()}{selected_board_cid}</code></div>", unsafe_allow_html=True)
+        else:
+            st.markdown(f"<div style='font-size: 0.84rem; padding: 4px 10px; background: #eff6ff; border: 1.2px solid #bfdbfe; border-radius: 6px; color: #1e40af; font-weight: 700; display: inline-block; margin-bottom: 10px;'>⏳ Batch <b>{selected_board_cid}</b>: IN PROGRESS ({c_done} Done, {c_prog} Pending) for {spoc_target_name.title()} &nbsp;|&nbsp; Concat: <code>{spoc_target_name.title()}{selected_board_cid}</code></div>", unsafe_allow_html=True)
 
     for i, s in enumerate(scoped_students):
         s["queue_index"] = i
@@ -2060,120 +2185,6 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
         st.cache_data.clear()
         st.toast("Database cache refreshed from Google Sheets!", icon="🔄")
         st.rerun()
-
-    # ==========================================================================
-    # 🏁 HIGH SPEED PER-CALL-ID BATCH COMPLETION & LOCK CENTER FOR PLACEMENT
-    # ==========================================================================
-    spoc_all_plc_students = [s for s in all_placement_students if s["called_by"].strip().lower() == current_spoc.strip().lower()]
-    if not spoc_all_plc_students:
-        spoc_all_plc_students = active_queue_students
-
-    spoc_plc_cids = sorted(list({str(s.get("call_id", "")).strip() for s in spoc_all_plc_students if str(s.get("call_id", "")).strip()}))
-    for def_cid in ["1153", "1000"]:
-        if def_cid not in spoc_plc_cids and any(str(s.get("call_id", "")).strip() == def_cid for s in all_placement_students):
-            spoc_plc_cids.append(def_cid)
-    spoc_plc_cids = sorted(spoc_plc_cids)
-
-    total_spoc_calls = len(spoc_all_plc_students)
-    total_done_calls = sum(1 for s in spoc_all_plc_students if s.get("call_status") == "Done")
-    total_prog_calls = total_spoc_calls - total_done_calls
-
-    st.markdown(f"""
-        <div style="background: #ffffff; border: 2.2px solid #0284c7; border-radius: 10px; padding: 12px 16px; margin-bottom: 12px; box-shadow: 0 2px 10px rgba(2, 132, 199, 0.12);">
-            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
-                <div>
-                    <span style="color: #0369a1; font-size: 1.05rem; font-weight: 800;">📞 Placement Calling Scope: {current_spoc.title()}</span>
-                    <div style="color: #475569; font-size: 0.86rem; margin-top: 3px;">
-                        ✅ Done: <b style="color: #16a34a;">{total_done_calls}</b> &nbsp;|&nbsp; ⏳ In Progress: <b style="color: #ea580c;">{total_prog_calls}</b> &nbsp;|&nbsp; 📊 Total Allocated: <b>{total_spoc_calls}</b>
-                    </div>
-                </div>
-                <div style="color: #0f172a; font-size: 0.84rem; background: #f0f9ff; border: 1px solid #bae6fd; padding: 6px 12px; border-radius: 6px; font-weight: 600;">
-                    💡 Mark each Call ID as <b>DONE & Lock</b> independently as you finish calling that batch!
-                </div>
-            </div>
-        </div>
-    """, unsafe_allow_html=True)
-
-    for cid in spoc_plc_cids:
-        cid_students = [s for s in spoc_all_plc_students if str(s.get("call_id", "")).strip() == cid]
-        if not cid_students:
-            continue
-        c_tot = len(cid_students)
-        c_done = sum(1 for s in cid_students if s.get("call_status") == "Done")
-        c_prog = c_tot - c_done
-        is_locked = is_placement_batch_locked(current_spoc, cid, spoc_all_plc_students)
-        concat_val = f"{current_spoc}{cid}"
-        if cid_students and cid_students[0].get("concat"):
-            concat_val = cid_students[0].get("concat")
-
-        if not is_locked:
-            col_b_info, col_b_act = st.columns([3.2, 2.3])
-            with col_b_info:
-                st.markdown(f"""
-                    <div style="background: #f8fafc; border: 1.5px solid #cbd5e1; border-left: 5px solid #0284c7; border-radius: 8px; padding: 9px 14px; margin-bottom: 8px;">
-                        <span style="font-weight: 800; color: #0f172a; font-size: 0.95rem;">🏷️ Batch: <b style="color: #0284c7;">{cid}</b> &nbsp;|&nbsp; Concat: <b style="color: #475569;">{concat_val}</b></span>
-                        <div style="display: flex; gap: 12px; font-size: 0.84rem; margin-top: 3px; font-weight: 700;">
-                            <span style="color: #15803d;">✅ Done: {c_done}</span>
-                            <span style="color: #ea580c;">⏳ In Progress: {c_prog}</span>
-                            <span style="color: #1e40af;">📊 Total: {c_tot}</span>
-                        </div>
-                    </div>
-                """, unsafe_allow_html=True)
-            with col_b_act:
-                btn_txt = f"🏁 Mark {cid} as DONE & Lock ({c_prog} pending)" if c_prog > 0 else f"🔒 Lock Batch {cid} & Move Next"
-                if st.button(btn_txt, type="primary", key=f"plc_main_done_cid_{current_spoc}_{cid}", use_container_width=True, help=f"Marks ONLY the {c_tot} calls for {concat_val} as Done and locks batch"):
-                    updates_map = {}
-                    batch_updates = []
-                    for s in cid_students:
-                        s["call_status"] = "Done"
-                        c_concat = s.get("concat") or concat_val
-                        s["concat"] = c_concat
-                        updates_map[s["row_num"]] = ([], "Done", cid, c_concat)
-                        batch_updates.append({
-                            'range': f'AH{s["row_num"]}:AJ{s["row_num"]}',
-                            'values': [['Done', cid, c_concat]]
-                        })
-                    batch_update_in_memory_placement_rows(updates_map)
-                    set_placement_batch_lock(current_spoc, cid, True)
-                    st.session_state.placement_queue_index = 0
-                    save_placement_progress(current_spoc, 0)
-                    if placement_ws and batch_updates:
-                        _PLACEMENT_BG_EXECUTOR.submit(placement_ws.batch_update, batch_updates)
-                    st.toast(f"🎉 Batch {cid} ({concat_val}) marked DONE & Locked! Moved to next active queue.", icon="✅")
-                    time.sleep(0.2)
-                    st.rerun()
-        else:
-            col_b_done, col_b_reopen = st.columns([3.8, 1.7])
-            with col_b_done:
-                st.markdown(f"""
-                    <div style="background: linear-gradient(135deg, #dcfce7, #f0fdf4); border: 1.5px solid #86efac; border-left: 5px solid #16a34a; border-radius: 8px; padding: 9px 14px; margin-bottom: 8px;">
-                        <span style="font-weight: 800; color: #15803d; font-size: 0.95rem;">🎉 Batch {cid} ({concat_val}) Locked & Completed! ({c_tot}/{c_tot} Calls Done)</span>
-                        <div style="color: #166534; font-size: 0.82rem; margin-top: 2px;">
-                            🔒 Locked for <b>{current_spoc.title()}</b>. This batch is hidden from active calling queue & redial list.
-                        </div>
-                    </div>
-                """, unsafe_allow_html=True)
-            with col_b_reopen:
-                if st.button(f"🔓 Unlock / Reopen {cid}", key=f"plc_reopen_cid_{current_spoc}_{cid}", use_container_width=True, help=f"Reopen batch {cid} back to Active Calling Queue"):
-                    updates_map = {}
-                    batch_updates = []
-                    for s in cid_students:
-                        is_verified = (s.get("contactable", "").strip().lower() in ["yes", "no"]) or bool(s.get("verification_date", "").strip())
-                        new_st = "Done" if is_verified else "Progress"
-                        s["call_status"] = new_st
-                        c_concat = s.get("concat") or concat_val
-                        updates_map[s["row_num"]] = ([], new_st, cid, c_concat)
-                        batch_updates.append({
-                            'range': f'AH{s["row_num"]}:AJ{s["row_num"]}',
-                            'values': [[new_st, cid, c_concat]]
-                        })
-                    batch_update_in_memory_placement_rows(updates_map)
-                    set_placement_batch_lock(current_spoc, cid, False)
-                    if placement_ws and batch_updates:
-                        _PLACEMENT_BG_EXECUTOR.submit(placement_ws.batch_update, batch_updates)
-                    st.toast(f"🔄 Batch {cid} unlocked & restored to active queue!", icon="🔄")
-                    time.sleep(0.2)
-                    st.rerun()
 
     prog_pct = min((current_q_idx + 1) / total_assigned_queue, 1.0) if total_assigned_queue > 0 else 0
     st.progress(prog_pct)
