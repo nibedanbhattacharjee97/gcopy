@@ -797,7 +797,7 @@ def compute_enrollment_stats(students, live_history=None):
 # ==============================================================================
 # 📋 FRESH CALL LIST UI COMPONENT
 # ==============================================================================
-def render_enrollment_fresh_call_list(fresh_stats, current_spoc):
+def render_enrollment_fresh_call_list(fresh_stats, current_spoc, key_prefix="pop"):
     f_spoc = current_spoc.title()
     v_pending = fresh_stats["fresh_pending"]
     v_assigned = fresh_stats["total_assigned"]
@@ -831,7 +831,7 @@ def render_enrollment_fresh_call_list(fresh_stats, current_spoc):
             "Just Numbers",
             value=just_nums_text,
             height=160,
-            key=f"enr_ta_just_nums_{f_spoc}",
+            key=f"enr_ta_just_nums_{f_spoc}_{key_prefix}",
             help="Click inside and press Ctrl+A / Ctrl+C to copy all pending numbers directly into your dialer."
         )
 
@@ -843,7 +843,7 @@ def render_enrollment_fresh_call_list(fresh_stats, current_spoc):
                 file_name=f"Enrollment_Pending_Numbers_{f_spoc}_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
                 mime="text/plain",
                 use_container_width=True,
-                key=f"enr_dl_just_nums_{f_spoc}"
+                key=f"enr_dl_just_nums_{f_spoc}_{key_prefix}"
             )
         with c_dl2:
             st.info("💡 Tip: Use your auto-dialer or mobile softphone with this list.")
@@ -861,7 +861,8 @@ def render_enrollment_fresh_call_list(fresh_stats, current_spoc):
                 p_c = clean_phone(s['contact_number'])
                 st.markdown(f"<a href='tel:{p_c}' style='color: #1a73e8; font-weight: 700; text-decoration: none;'>📞 {p_c}</a>", unsafe_allow_html=True)
             with cq_col4:
-                if st.button("Jump 🎯", key=f"enr_jump_fresh_{f_idx}_{s['row_num']}", use_container_width=True):
+                if st.button("Jump 🎯", key=f"enr_jump_fresh_{f_idx}_{s['row_num']}_{key_prefix}", use_container_width=True):
+                    st.session_state.pin_enrollment_no_call_list = False
                     st.session_state.enrollment_queue_index = s["queue_index"]
                     save_enrollment_progress(current_spoc, s["queue_index"], s["contact_number"], active_call_index=st.session_state.get("enrollment_active_call_index", 0))
                     st.rerun()
@@ -869,7 +870,7 @@ def render_enrollment_fresh_call_list(fresh_stats, current_spoc):
 # ==============================================================================
 # 🚫 UNCONTACTABLE / NO LIST UI COMPONENT
 # ==============================================================================
-def render_enrollment_not_contactable_list(fresh_stats, current_spoc):
+def render_enrollment_not_contactable_list(fresh_stats, current_spoc, key_prefix="pop"):
     f_spoc = current_spoc.title()
     no_items = fresh_stats["no_list"]
     no_cnt = len(no_items)
@@ -881,7 +882,7 @@ def render_enrollment_not_contactable_list(fresh_stats, current_spoc):
                 <span style="background: #ffedd5; color: #c2410c; border: 1px solid #fed7aa; padding: 2px 8px; border-radius: 12px; font-weight: 700; font-size: 0.82rem;">{no_cnt} Unreached</span>
             </div>
             <div style="margin-top: 6px; font-size: 0.82rem; color: #4b5563;">
-                Students previously logged as Not Contactable (Switched Off, Ringing, Wrong Number, etc.) for redial.
+                Students previously logged as Not Contactable (Switched Off, Ringing, Wrong Number, etc.) for redial. Click <b>Retry 🔄</b> to load and dial!
             </div>
         </div>
     """, unsafe_allow_html=True)
@@ -892,13 +893,13 @@ def render_enrollment_not_contactable_list(fresh_stats, current_spoc):
 
     no_nums_text = "\n".join([clean_phone(s["contact_number"]) for s in no_items if clean_phone(s["contact_number"])])
 
-    t_raw, t_call = st.tabs(["🔢 Uncontactable Numbers", "🔄 Redial Queue"])
+    t_raw, t_call = st.tabs(["🔢 Uncontactable Numbers", "🔄 Interactive Redial Queue"])
     with t_raw:
         st.text_area(
             "Uncontactable Numbers",
             value=no_nums_text,
             height=140,
-            key=f"enr_ta_no_nums_{f_spoc}"
+            key=f"enr_ta_no_nums_{f_spoc}_{key_prefix}"
         )
         st.download_button(
             label=f"📥 Download Uncontactable Numbers ({no_cnt})",
@@ -906,12 +907,31 @@ def render_enrollment_not_contactable_list(fresh_stats, current_spoc):
             file_name=f"Enrollment_Uncontactable_Numbers_{f_spoc}_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
             mime="text/plain",
             use_container_width=True,
-            key=f"enr_dl_no_nums_{f_spoc}"
+            key=f"enr_dl_no_nums_{f_spoc}_{key_prefix}"
         )
 
     with t_call:
-        st.caption("Showing top 40 unreached targets for redial:")
-        for n_idx, s in enumerate(no_items[:40]):
+        q_search = st.text_input(
+            "Search phone, student name, or reason in unreached queue:",
+            placeholder="🔍 Type phone number, student name, or reason (e.g. Ringing, Ping, Switched off)...",
+            key=f"enr_nc_search_{f_spoc}_{key_prefix}",
+            label_visibility="collapsed"
+        )
+        filtered = no_items
+        if q_search.strip():
+            clean_q = clean_phone(q_search.strip())
+            text_q = q_search.strip().lower()
+            filtered = [
+                x for x in no_items
+                if (clean_q and clean_q in clean_phone(x.get("contact_number", "")))
+                or (text_q in x.get("student_name", "").lower())
+                or (text_q in x.get("enroll_remarks", "").lower())
+                or (f"#{x.get('queue_index', 0)+1}" == q_search.strip())
+                or (f"#{x.get('row_num', 0)}" == q_search.strip())
+            ]
+
+        st.caption(f"Showing **{min(len(filtered), 40)}** of **{len(filtered)}** calls ready for Redial:")
+        for n_idx, s in enumerate(filtered[:40]):
             cq1, cq2, cq3, cq4 = st.columns([0.8, 2.5, 2.2, 1.0])
             with cq1:
                 st.markdown(f"<b>#{s['queue_index'] + 1}</b>", unsafe_allow_html=True)
@@ -922,10 +942,47 @@ def render_enrollment_not_contactable_list(fresh_stats, current_spoc):
                 p_c = clean_phone(s['contact_number'])
                 st.markdown(f"<a href='tel:{p_c}' style='color: #1a73e8; font-weight: 700; text-decoration: none;'>📞 {p_c}</a>", unsafe_allow_html=True)
             with cq4:
-                if st.button("Retry 🔄", key=f"enr_retry_no_{n_idx}_{s['row_num']}", use_container_width=True):
-                    st.session_state.enrollment_queue_index = s["queue_index"]
+                if st.button("Retry 🔄", key=f"enr_retry_no_{n_idx}_{s['row_num']}_{key_prefix}", use_container_width=True):
+                    st.session_state.pin_enrollment_no_call_list = True
+                    st.session_state.pin_enrollment_fresh_call_list = False
+                    target_no_idx = 0
+                    for no_i, no_s in enumerate(no_items):
+                        if no_s["row_num"] == s["row_num"]:
+                            target_no_idx = no_i
+                            break
+                    st.session_state.enrollment_no_queue_index = target_no_idx
+                    st.session_state.enrollment_queue_index = s.get("queue_index", 0)
                     st.session_state.enrollment_editing_row = s["row_num"]
-                    save_enrollment_progress(current_spoc, s["queue_index"], s["contact_number"], active_call_index=st.session_state.get("enrollment_active_call_index", 0))
+                    st.session_state.enrollment_active_recall = s["row_num"]
+                    # Preload preset
+                    r_k = s["row_num"]
+                    st.session_state[f"enr_preset_{r_k}"] = {
+                        "contactable": "No",
+                        "class_started": s.get("class_started", "Yes"),
+                        "got_info": s.get("got_info", "Yes"),
+                        "referral_person_ok": s.get("referral_person_ok", "Yes"),
+                        "referral_name": s.get("referral_name", ""),
+                        "dob": s.get("dob", ""),
+                        "income": s.get("income", ""),
+                        "satisfied": s.get("satisfied", "Yes"),
+                        "classes_in_week": s.get("classes_in_week", "5"),
+                        "class_mode": s.get("class_mode", "Offline"),
+                        "quality_of_classes": s.get("quality_of_classes", "Excellent"),
+                        "edu_status": s.get("edu_status", "Graduate"),
+                        "verification_date": date.today(),
+                        "interest_in_job": s.get("interest_in_job", "Yes"),
+                        "working_status": s.get("working_status", "No"),
+                        "company_name": s.get("company_name", ""),
+                        "salary": s.get("salary", ""),
+                        "job_type": s.get("job_type", "Full Time"),
+                        "months_working": s.get("months_working", ""),
+                        "left_job": s.get("left_job", "No"),
+                        "why_joined": s.get("why_joined", ""),
+                        "enroll_remarks": s.get("enroll_remarks", "") or "Did not respond",
+                        "remarks_2": s.get("remarks_2", ""),
+                        "remarks_3": s.get("remarks_3", "")
+                    }
+                    st.toast(f"Loaded Not Contactable Target #{target_no_idx + 1} ({s['student_name']}) for Re-Call!", icon="🔄")
                     st.rerun()
 
 # ==============================================================================
@@ -1303,6 +1360,26 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
                 background-color: #fff7ed !important;
                 border-color: #9a3412 !important;
             }
+            .nocontact-pinned-card {
+                background: #fff7ed;
+                border: 1.5px solid #fed7aa;
+                border-left: 5px solid #ea580c;
+                border-radius: 10px;
+                padding: 14px 16px;
+                margin-top: 10px;
+                margin-bottom: 1.2rem;
+                box-shadow: 0 2px 8px rgba(234, 88, 12, 0.08);
+            }
+            .fresh-pinned-card {
+                background: #f0fdf4;
+                border: 1.5px solid #86efac;
+                border-left: 5px solid #16a34a;
+                border-radius: 10px;
+                padding: 14px 16px;
+                margin-top: 10px;
+                margin-bottom: 1.2rem;
+                box-shadow: 0 2px 8px rgba(22, 101, 52, 0.08);
+            }
         </style>
     """, unsafe_allow_html=True)
 
@@ -1608,19 +1685,135 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
 
     st.markdown("<div style='margin-bottom: 12px;'></div>", unsafe_allow_html=True)
 
+    # Initialize unified pin state flags
+    if "pin_enrollment_no_call_list" not in st.session_state:
+        st.session_state.pin_enrollment_no_call_list = False
+    if "pin_enrollment_fresh_call_list" not in st.session_state:
+        st.session_state.pin_enrollment_fresh_call_list = False
+
+    def toggle_pin_no():
+        st.session_state.pin_enrollment_no_call_list = not st.session_state.get("pin_enrollment_no_call_list", False)
+        if st.session_state.pin_enrollment_no_call_list:
+            st.session_state.pin_enrollment_fresh_call_list = False
+            if "enrollment_no_queue_index" not in st.session_state:
+                st.session_state.enrollment_no_queue_index = 0
+
+    def unpin_no():
+        st.session_state.pin_enrollment_no_call_list = False
+        st.session_state.pop("enrollment_editing_row", None)
+        st.session_state.pop("enrollment_active_recall", None)
+
+    def toggle_pin_fresh():
+        st.session_state.pin_enrollment_fresh_call_list = not st.session_state.get("pin_enrollment_fresh_call_list", False)
+        if st.session_state.pin_enrollment_fresh_call_list:
+            st.session_state.pin_enrollment_no_call_list = False
+
+    def unpin_fresh():
+        st.session_state.pin_enrollment_fresh_call_list = False
+
     # Popovers for Fresh Call Queue & Uncontactable Queue
     col_hdr_btns1, col_hdr_btns2 = st.columns(2)
     with col_hdr_btns1:
         st.markdown('<div class="fresh-call-header-btn">', unsafe_allow_html=True)
         with st.popover(f"📋 Fresh Calling Queue ({v_pending} Pending)", use_container_width=True):
-            render_enrollment_fresh_call_list(scope_stats, selected_perf_view if selected_perf_view != "🌐 All Team Combined (Portal Total)" else current_spoc)
+            render_enrollment_fresh_call_list(scope_stats, selected_perf_view if selected_perf_view != "🌐 All Team Combined (Portal Total)" else current_spoc, key_prefix="pop")
+            st.markdown("---")
+            chk_pin_fresh = st.checkbox(
+                "📌 Keep Fresh List pinned above form",
+                value=st.session_state.get("pin_enrollment_fresh_call_list", False),
+                key=f"enr_chk_pin_fresh_{display_scope_name}"
+            )
+            if chk_pin_fresh != st.session_state.get("pin_enrollment_fresh_call_list", False):
+                st.session_state.pin_enrollment_fresh_call_list = chk_pin_fresh
+                if chk_pin_fresh:
+                    st.session_state.pin_enrollment_no_call_list = False
+                st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
 
     with col_hdr_btns2:
         st.markdown('<div class="no-list-header-btn">', unsafe_allow_html=True)
         with st.popover(f"🚫 Uncontactable ('No') Queue ({v_no} Unreached)", use_container_width=True):
-            render_enrollment_not_contactable_list(scope_stats, selected_perf_view if selected_perf_view != "🌐 All Team Combined (Portal Total)" else current_spoc)
+            render_enrollment_not_contactable_list(scope_stats, selected_perf_view if selected_perf_view != "🌐 All Team Combined (Portal Total)" else current_spoc, key_prefix="pop")
+            st.markdown("---")
+            chk_pin_no = st.checkbox(
+                "📌 Keep 'No' List pinned above form",
+                value=st.session_state.get("pin_enrollment_no_call_list", False),
+                key=f"enr_chk_pin_no_{display_scope_name}"
+            )
+            if chk_pin_no != st.session_state.get("pin_enrollment_no_call_list", False):
+                st.session_state.pin_enrollment_no_call_list = chk_pin_no
+                if chk_pin_no:
+                    st.session_state.pin_enrollment_fresh_call_list = False
+                    if "enrollment_no_queue_index" not in st.session_state:
+                        st.session_state.enrollment_no_queue_index = 0
+                st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
+
+    # 1-Click Pin / Unpin Quick Controls Bar
+    col_tgl1, col_tgl2 = st.columns(2)
+    with col_tgl1:
+        if v_pending > 0:
+            is_f_pinned = bool(st.session_state.get("pin_enrollment_fresh_call_list", False))
+            btn_lbl_f = "📌 Unpin Fresh List" if is_f_pinned else "📌 Pin Fresh List above form"
+            st.button(
+                btn_lbl_f,
+                key=f"enr_tgl_btn_fresh_{display_scope_name}",
+                on_click=toggle_pin_fresh,
+                use_container_width=True
+            )
+    with col_tgl2:
+        if v_no > 0:
+            is_no_pinned = bool(st.session_state.get("pin_enrollment_no_call_list", False))
+            btn_lbl_no = "📌 Unpin 'No' List" if is_no_pinned else "📌 Pin 'No' List above form"
+            st.button(
+                btn_lbl_no,
+                key=f"enr_tgl_btn_no_{display_scope_name}",
+                on_click=toggle_pin_no,
+                use_container_width=True
+            )
+
+    # ==========================================================================
+    # 📌 PINNED QUEUE PANELS (INSTANT PINNING ABOVE TARGET FORM)
+    # ==========================================================================
+    if st.session_state.get("pin_enrollment_fresh_call_list") and v_pending > 0:
+        st.markdown('<div class="fresh-pinned-card">', unsafe_allow_html=True)
+        col_pf1, col_pf2 = st.columns([5, 1])
+        with col_pf1:
+            st.markdown(f"<div style='font-weight: 800; color: #166534; font-size: 1.05rem; display: flex; align-items: center; gap: 8px;'>🟢 Pinned Fresh Calling Queue ({display_scope_name}) — {v_pending} Pending</div>", unsafe_allow_html=True)
+        with col_pf2:
+            st.button(
+                "✖ Unpin List",
+                key=f"enr_btn_unpin_fresh_{display_scope_name}",
+                on_click=unpin_fresh,
+                use_container_width=True
+            )
+        render_enrollment_fresh_call_list(
+            scope_stats,
+            selected_perf_view if selected_perf_view != "🌐 All Team Combined (Portal Total)" else current_spoc,
+            key_prefix="pin"
+        )
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    if st.session_state.get("pin_enrollment_no_call_list") and v_no > 0:
+        st.markdown('<div class="nocontact-pinned-card">', unsafe_allow_html=True)
+        col_pn1, col_pn2 = st.columns([5, 1])
+        with col_pn1:
+            st.markdown(f"<div style='font-weight: 800; color: #9a3412; font-size: 1.05rem; display: flex; align-items: center; gap: 8px;'>📞 Pinned Not Contactable Queue ('No' Calls) ({display_scope_name}) — {v_no} Calls</div>", unsafe_allow_html=True)
+        with col_pn2:
+            st.button(
+                "✖ Unpin List",
+                key=f"enr_btn_unpin_no_{display_scope_name}",
+                on_click=unpin_no,
+                use_container_width=True
+            )
+        render_enrollment_not_contactable_list(
+            scope_stats,
+            selected_perf_view if selected_perf_view != "🌐 All Team Combined (Portal Total)" else current_spoc,
+            key_prefix="pin"
+        )
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown("<div style='margin-bottom: 12px;'></div>", unsafe_allow_html=True)
 
     # ==========================================================================
     # 🎯 TARGET SELECTION & NAVIGATION
@@ -1649,30 +1842,104 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
         for i, s in enumerate(active_queue_students):
             s["queue_index"] = i
 
-    total_assigned_queue = len(active_queue_students)
-    if total_assigned_queue == 0:
-        active_queue_students = all_enrollment_students
-        total_assigned_queue = len(active_queue_students)
+    # Determine queue mode: Not Contactable mode vs Fresh Calling mode
+    no_queue_students = scope_stats.get("no_list", [])
+    is_no_mode = bool(st.session_state.get("pin_enrollment_no_call_list") and len(no_queue_students) > 0)
+
+    if is_no_mode:
+        working_queue = no_queue_students
+        total_assigned_queue = len(working_queue)
+        if "enrollment_no_queue_index" not in st.session_state:
+            st.session_state.enrollment_no_queue_index = 0
+
+        active_target_row = st.session_state.get("enrollment_editing_row") or st.session_state.get("enrollment_active_recall")
+        if active_target_row:
+            found_no_idx = None
+            for idx, s in enumerate(working_queue):
+                if s["row_num"] == active_target_row:
+                    found_no_idx = idx
+                    break
+            if found_no_idx is not None:
+                st.session_state.enrollment_no_queue_index = found_no_idx
+
+        current_q_idx = st.session_state.enrollment_no_queue_index
+        if current_q_idx >= total_assigned_queue:
+            current_q_idx = max(0, total_assigned_queue - 1)
+            st.session_state.enrollment_no_queue_index = current_q_idx
+        if current_q_idx < 0:
+            current_q_idx = 0
+            st.session_state.enrollment_no_queue_index = 0
+
+        current_student = working_queue[current_q_idx]
+
+        # Auto preset for this student if not yet present
+        r_k = current_student["row_num"]
+        if f"enr_preset_{r_k}" not in st.session_state:
+            st.session_state[f"enr_preset_{r_k}"] = {
+                "contactable": "No",
+                "class_started": current_student.get("class_started", "Yes"),
+                "got_info": current_student.get("got_info", "Yes"),
+                "referral_person_ok": current_student.get("referral_person_ok", "Yes"),
+                "referral_name": current_student.get("referral_name", ""),
+                "dob": current_student.get("dob", ""),
+                "income": current_student.get("income", ""),
+                "satisfied": current_student.get("satisfied", "Yes"),
+                "classes_in_week": current_student.get("classes_in_week", "5"),
+                "class_mode": current_student.get("class_mode", "Offline"),
+                "quality_of_classes": current_student.get("quality_of_classes", "Excellent"),
+                "edu_status": current_student.get("edu_status", "Graduate"),
+                "verification_date": date.today(),
+                "interest_in_job": current_student.get("interest_in_job", "Yes"),
+                "working_status": current_student.get("working_status", "No"),
+                "company_name": current_student.get("company_name", ""),
+                "salary": current_student.get("salary", ""),
+                "job_type": current_student.get("job_type", "Full Time"),
+                "months_working": current_student.get("months_working", ""),
+                "left_job": current_student.get("left_job", "No"),
+                "why_joined": current_student.get("why_joined", ""),
+                "enroll_remarks": current_student.get("enroll_remarks", "") or "Did not respond",
+                "remarks_2": current_student.get("remarks_2", ""),
+                "remarks_3": current_student.get("remarks_3", "")
+            }
+        st.session_state.enrollment_active_recall = r_k
+    else:
+        working_queue = active_queue_students
+        total_assigned_queue = len(working_queue)
         if total_assigned_queue == 0:
-            st.warning("No enrollment verification records found. Please check data file or Google Sheet.")
-            return
+            active_queue_students = all_enrollment_students
+            working_queue = all_enrollment_students
+            total_assigned_queue = len(working_queue)
+            if total_assigned_queue == 0:
+                st.warning("No enrollment verification records found. Please check data file or Google Sheet.")
+                return
 
-    # Auto-resume verification index
-    saved_q, saved_act = get_saved_enrollment_index(current_spoc, active_queue_students)
-    if "enrollment_queue_index" not in st.session_state:
-        st.session_state.enrollment_queue_index = saved_q
-    if "enrollment_active_call_index" not in st.session_state:
-        st.session_state.enrollment_active_call_index = saved_act
+        # Auto-resume verification index
+        saved_q, saved_act = get_saved_enrollment_index(current_spoc, active_queue_students)
+        if "enrollment_queue_index" not in st.session_state:
+            st.session_state.enrollment_queue_index = saved_q
+        if "enrollment_active_call_index" not in st.session_state:
+            st.session_state.enrollment_active_call_index = saved_act
 
-    current_q_idx = st.session_state.enrollment_queue_index
-    if current_q_idx >= total_assigned_queue:
-        current_q_idx = total_assigned_queue - 1
-        st.session_state.enrollment_queue_index = current_q_idx
-    if current_q_idx < 0:
-        current_q_idx = 0
-        st.session_state.enrollment_queue_index = 0
+        current_q_idx = st.session_state.enrollment_queue_index
+        active_target_row = st.session_state.get("enrollment_editing_row") or st.session_state.get("enrollment_active_recall")
+        if active_target_row:
+            found_active_idx = None
+            for idx, s in enumerate(working_queue):
+                if s["row_num"] == active_target_row:
+                    found_active_idx = idx
+                    break
+            if found_active_idx is not None:
+                current_q_idx = found_active_idx
+                st.session_state.enrollment_queue_index = current_q_idx
 
-    current_student = active_queue_students[current_q_idx]
+        if current_q_idx >= len(working_queue):
+            current_q_idx = max(0, len(working_queue) - 1)
+            st.session_state.enrollment_queue_index = current_q_idx
+        if current_q_idx < 0:
+            current_q_idx = 0
+            st.session_state.enrollment_queue_index = 0
+
+        current_student = working_queue[current_q_idx]
 
     # Quick Search Bar
     st.markdown('<div class="profile-card-enhanced" style="padding: 10px 14px; margin-bottom: 12px;">', unsafe_allow_html=True)
@@ -1689,15 +1956,19 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
             if search_query.strip():
                 sq = search_query.strip().lower()
                 matched_idx = next(
-                    (i for i, s in enumerate(active_queue_students)
+                    (i for i, s in enumerate(working_queue)
                      if sq in s["student_name"].lower() or sq in clean_phone(s["contact_number"]) or sq in s["student_code"].lower() or sq in s["batch_code"].lower()),
                     None
                 )
                 if matched_idx is not None:
-                    st.session_state.enrollment_queue_index = matched_idx
-                    st.session_state.enrollment_editing_row = active_queue_students[matched_idx]["row_num"]
-                    save_enrollment_progress(current_spoc, matched_idx, active_queue_students[matched_idx]["contact_number"], active_call_index=st.session_state.get("enrollment_active_call_index", 0))
-                    st.toast(f"Found student #{matched_idx + 1}: {active_queue_students[matched_idx]['student_name']}", icon="🎯")
+                    if is_no_mode:
+                        st.session_state.enrollment_no_queue_index = matched_idx
+                    else:
+                        st.session_state.enrollment_queue_index = matched_idx
+                    st.session_state.enrollment_editing_row = working_queue[matched_idx]["row_num"]
+                    if not is_no_mode:
+                        save_enrollment_progress(current_spoc, matched_idx, working_queue[matched_idx]["contact_number"], active_call_index=st.session_state.get("enrollment_active_call_index", 0))
+                    st.toast(f"Found student #{matched_idx + 1}: {working_queue[matched_idx]['student_name']}", icon="🎯")
                     st.rerun()
                 else:
                     st.error("No student matching search query.")
@@ -1705,36 +1976,57 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
 
     # Navigation Controls Bar
     c_first, c_prev, c_next, c_last, c_clear, c_refresh = st.columns([1, 1, 1, 1, 1.2, 1.2])
-    if c_first.button("⏮ First", use_container_width=True, disabled=(current_q_idx == 0)):
-        st.session_state.enrollment_queue_index = 0
-        first_s = active_queue_students[0]
-        save_enrollment_progress(current_spoc, 0, first_s["contact_number"], active_call_index=st.session_state.get("enrollment_active_call_index", 0))
+    if c_first.button("⏮ First", use_container_width=True, disabled=(current_q_idx == 0 or total_assigned_queue == 0)):
+        if is_no_mode:
+            st.session_state.enrollment_no_queue_index = 0
+        else:
+            st.session_state.enrollment_queue_index = 0
+            first_s = active_queue_students[0]
+            save_enrollment_progress(current_spoc, 0, first_s["contact_number"], active_call_index=st.session_state.get("enrollment_active_call_index", 0))
+        st.session_state.pop("enrollment_editing_row", None)
+        st.session_state.pop("enrollment_active_recall", None)
         st.rerun()
 
-    if c_prev.button("◀ Prev", use_container_width=True, disabled=(current_q_idx <= 0)):
-        st.session_state.enrollment_queue_index = max(0, current_q_idx - 1)
-        prev_s = active_queue_students[st.session_state.enrollment_queue_index]
-        save_enrollment_progress(current_spoc, st.session_state.enrollment_queue_index, prev_s["contact_number"], active_call_index=st.session_state.get("enrollment_active_call_index", 0))
+    if c_prev.button("◀ Prev", use_container_width=True, disabled=(current_q_idx <= 0 or total_assigned_queue == 0)):
+        if is_no_mode:
+            st.session_state.enrollment_no_queue_index = max(0, current_q_idx - 1)
+        else:
+            st.session_state.enrollment_queue_index = max(0, current_q_idx - 1)
+            prev_s = active_queue_students[st.session_state.enrollment_queue_index]
+            save_enrollment_progress(current_spoc, st.session_state.enrollment_queue_index, prev_s["contact_number"], active_call_index=st.session_state.get("enrollment_active_call_index", 0))
+        st.session_state.pop("enrollment_editing_row", None)
+        st.session_state.pop("enrollment_active_recall", None)
         st.rerun()
 
-    if c_next.button("Next ▶", use_container_width=True, disabled=(current_q_idx >= total_assigned_queue - 1)):
-        st.session_state.enrollment_queue_index = min(total_assigned_queue - 1, current_q_idx + 1)
-        if st.session_state.enrollment_queue_index > st.session_state.get("enrollment_active_call_index", 0):
-            st.session_state.enrollment_active_call_index = st.session_state.enrollment_queue_index
-        next_s = active_queue_students[st.session_state.enrollment_queue_index]
-        save_enrollment_progress(current_spoc, st.session_state.enrollment_queue_index, next_s["contact_number"], active_call_index=st.session_state.get("enrollment_active_call_index", 0))
+    if c_next.button("Next ▶", use_container_width=True, disabled=(current_q_idx >= total_assigned_queue - 1 or total_assigned_queue == 0)):
+        if is_no_mode:
+            st.session_state.enrollment_no_queue_index = min(total_assigned_queue - 1, current_q_idx + 1)
+        else:
+            st.session_state.enrollment_queue_index = min(total_assigned_queue - 1, current_q_idx + 1)
+            if st.session_state.enrollment_queue_index > st.session_state.get("enrollment_active_call_index", 0):
+                st.session_state.enrollment_active_call_index = st.session_state.enrollment_queue_index
+            next_s = active_queue_students[st.session_state.enrollment_queue_index]
+            save_enrollment_progress(current_spoc, st.session_state.enrollment_queue_index, next_s["contact_number"], active_call_index=st.session_state.get("enrollment_active_call_index", 0))
+        st.session_state.pop("enrollment_editing_row", None)
+        st.session_state.pop("enrollment_active_recall", None)
         st.rerun()
 
-    if c_last.button("⏭ Last", use_container_width=True, disabled=(current_q_idx == total_assigned_queue - 1)):
-        st.session_state.enrollment_queue_index = total_assigned_queue - 1
-        last_s = active_queue_students[total_assigned_queue - 1]
-        save_enrollment_progress(current_spoc, total_assigned_queue - 1, last_s["contact_number"], active_call_index=st.session_state.get("enrollment_active_call_index", 0))
+    if c_last.button("⏭ Last", use_container_width=True, disabled=(current_q_idx == total_assigned_queue - 1 or total_assigned_queue == 0)):
+        if is_no_mode:
+            st.session_state.enrollment_no_queue_index = total_assigned_queue - 1
+        else:
+            st.session_state.enrollment_queue_index = total_assigned_queue - 1
+            last_s = active_queue_students[total_assigned_queue - 1]
+            save_enrollment_progress(current_spoc, total_assigned_queue - 1, last_s["contact_number"], active_call_index=st.session_state.get("enrollment_active_call_index", 0))
+        st.session_state.pop("enrollment_editing_row", None)
+        st.session_state.pop("enrollment_active_recall", None)
         st.rerun()
 
     if c_clear.button("🧹 Clear Form", use_container_width=True):
         row_k = current_student["row_num"]
         st.session_state.pop(f"enr_preset_{row_k}", None)
         st.session_state.pop("enrollment_editing_row", None)
+        st.session_state.pop("enrollment_active_recall", None)
         keys_to_remove = [k for k in st.session_state.keys() if f"_{row_k}" in k and k.startswith("enr_")]
         for k in keys_to_remove:
             st.session_state.pop(k, None)
@@ -1756,6 +2048,11 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
     col_t1, col_t2 = st.columns([5, 1.1])
     phone_clean = clean_phone(current_student['contact_number'])
 
+    banner_bg = "linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%)" if is_no_mode else "linear-gradient(135deg, #e0f2fe 0%, #f0fdfa 100%)"
+    banner_border = "#ea580c" if is_no_mode else "#0284c7"
+    banner_text_col = "#9a3412" if is_no_mode else "#0369a1"
+    banner_title_html = f"📞 Calling Not Contactable Target <b>#{current_q_idx + 1} of {total_assigned_queue}</b> (Target #{current_student.get('queue_index', 0) + 1})" if is_no_mode else f"🎯 Calling Target <b>#{current_q_idx + 1} of {total_assigned_queue}</b>"
+
     with col_t1:
         # Safe HTML rendering without deprecation warnings
         components.html(f"""
@@ -1769,12 +2066,12 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
             }}
             .queue-banner {{
-                background: linear-gradient(135deg, #e0f2fe 0%, #f0fdfa 100%);
-                padding: 8px 16px; border-radius: 8px; border-left: 5px solid #0284c7;
+                background: {banner_bg};
+                padding: 8px 16px; border-radius: 8px; border-left: 5px solid {banner_border};
                 display: flex; justify-content: space-between; align-items: center; height: 48px;
             }}
             .banner-left {{
-                font-size: 1.0rem; color: #0369a1; font-weight: 700;
+                font-size: 1.0rem; color: {banner_text_col}; font-weight: 700;
                 display: flex; align-items: center; gap: 8px; white-space: nowrap;
                 overflow: hidden; text-overflow: ellipsis;
             }}
@@ -1792,7 +2089,7 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
         <body>
         <div class="queue-banner">
             <div class="banner-left">
-                <span>🎯 Calling Target <b>#{current_q_idx + 1} of {total_assigned_queue}</b></span>
+                <span>{banner_title_html}</span>
                 <span>•</span>
                 <span style="color: #0f172a;">{current_student['student_name']}</span>
                 <span>•</span>
@@ -1845,9 +2142,14 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
 
     with col_t2:
         if st.button("⏭ Skip", use_container_width=True, key=f"enr_skip_btn_{current_student['row_num']}"):
-            st.session_state.enrollment_queue_index = min(total_assigned_queue - 1, current_q_idx + 1)
-            next_s = active_queue_students[st.session_state.enrollment_queue_index]
-            save_enrollment_progress(current_spoc, st.session_state.enrollment_queue_index, next_s["contact_number"], active_call_index=st.session_state.get("enrollment_active_call_index", 0))
+            st.session_state.pop("enrollment_editing_row", None)
+            st.session_state.pop("enrollment_active_recall", None)
+            if is_no_mode:
+                st.session_state.enrollment_no_queue_index = min(total_assigned_queue - 1, current_q_idx + 1)
+            else:
+                st.session_state.enrollment_queue_index = min(total_assigned_queue - 1, current_q_idx + 1)
+                next_s = active_queue_students[st.session_state.enrollment_queue_index]
+                save_enrollment_progress(current_spoc, st.session_state.enrollment_queue_index, next_s["contact_number"], active_call_index=st.session_state.get("enrollment_active_call_index", 0))
             st.toast("Skipped to next target", icon="⏭")
             st.rerun()
 
@@ -1911,7 +2213,19 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
     cstatus_fg = "#166534" if cur_cstatus == "Done" else "#92400e"
     cstatus_bd = "#bbf7d0" if cur_cstatus == "Done" else "#fde68a"
 
-    status_badge_html = f"""
+    if is_no_mode:
+        status_badge_html = f"""
+        <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+            <span style="background: #e0f2fe; color: #0369a1; border: 1.5px solid #bae6fd; padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 0.84rem;">
+                🏷️ Call ID: {cur_cid}
+            </span>
+            <span style="background: #fff7ed; color: #9a3412; border: 1.5px solid #fed7aa; padding: 4px 10px; border-radius: 6px; font-weight: 800; font-size: 0.86rem;">
+                📞 NOT CONTACTABLE RE-CALL (#{current_q_idx + 1} of {total_assigned_queue})
+            </span>
+        </div>
+        """
+    elif is_edit_mode or is_already_verified:
+        status_badge_html = f"""
         <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
             <span style="background: #e0f2fe; color: #0369a1; border: 1.5px solid #bae6fd; padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 0.84rem;">
                 🏷️ Call ID: {cur_cid}
@@ -1923,7 +2237,9 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
                 ✏️ EDIT & UPDATE MODE (Row #{current_student['row_num']})
             </span>
         </div>
-    """ if (is_edit_mode or is_already_verified) else f"""
+        """
+    else:
+        status_badge_html = f"""
         <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
             <span style="background: #e0f2fe; color: #0369a1; border: 1.5px solid #bae6fd; padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 0.84rem;">
                 🏷️ Call ID: {cur_cid}
@@ -1935,7 +2251,7 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
                 ✨ FRESH CALL VERIFICATION (Target #{current_q_idx + 1})
             </span>
         </div>
-    """
+        """
 
     st.markdown('<div class="profile-card-enhanced" style="border-top: 4px solid #eab308;">', unsafe_allow_html=True)
     st.markdown(f"""
@@ -1947,7 +2263,16 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
         </div>
     """, unsafe_allow_html=True)
 
-    if is_edit_mode or is_already_verified:
+    if is_no_mode:
+        st.markdown(f"""
+            <div style="background: #fff7ed; border: 1.5px solid #fed7aa; border-left: 6px solid #ea580c; padding: 10px 14px; border-radius: 8px; margin-bottom: 14px;">
+                <b style="color: #9a3412; font-size: 0.98rem;">📞 Not Contactable Re-Call: Target #{current_q_idx + 1} of {total_assigned_queue} — {current_student['student_name']} (Original Target #{current_student.get('queue_index', 0) + 1}, Row #{current_student['row_num']}):</b>
+                <div style="color: #c2410c; font-size: 0.85rem; margin-top: 2px;">
+                    Previously unreached ({current_student.get('enroll_remarks') or 'Not Contactable'}). If the student answers now, select <b>'Yes'</b> to complete enrollment verification. Otherwise, update reason and save to progress to next.
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+    elif is_edit_mode or is_already_verified:
         st.markdown(f"""
             <div style="background: #fffbeb; border: 1.5px solid #fde68a; border-left: 6px solid #d97706; padding: 10px 14px; border-radius: 8px; margin-bottom: 14px;">
                 <b style="color: #92400e; font-size: 0.98rem;">✏️ Reviewing & Updating Target #{current_q_idx + 1} — {current_student['student_name']} (Row #{current_student['row_num']}):</b>
@@ -2087,12 +2412,18 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
                 st.toast(f"✅ Saved Target #{current_q_idx + 1} ({current_student['student_name']}) as Not Contactable!", icon="🚫")
 
                 # 5. Advance to next student in queue
-                if current_q_idx + 1 < total_assigned_queue:
-                    st.session_state.enrollment_queue_index = current_q_idx + 1
-                    next_s = active_queue_students[current_q_idx + 1]
-                    save_enrollment_progress(current_spoc, current_q_idx + 1, next_s["contact_number"], active_call_index=st.session_state.get("enrollment_active_call_index", 0))
+                if is_no_mode:
+                    if current_q_idx + 1 < total_assigned_queue:
+                        st.session_state.enrollment_no_queue_index = current_q_idx + 1
+                    else:
+                        st.session_state.enrollment_no_queue_index = 0
+                else:
+                    if current_q_idx + 1 < total_assigned_queue:
+                        st.session_state.enrollment_queue_index = current_q_idx + 1
+                        next_s = active_queue_students[current_q_idx + 1]
+                        save_enrollment_progress(current_spoc, current_q_idx + 1, next_s["contact_number"], active_call_index=st.session_state.get("enrollment_active_call_index", 0))
 
-                # 6. Instant UI re-render
+                time.sleep(0.1)
                 st.rerun()
             except Exception as ex:
                 st.error(f"Error saving: {ex}")
@@ -2219,17 +2550,24 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
                     st.session_state.enrollment_live_history.insert(0, (current_student['row_num'], list(payload)))
                     st.session_state.enrollment_live_history = st.session_state.enrollment_live_history[:25]
                     st.session_state.pop("enrollment_editing_row", None)
+                    st.session_state.pop("enrollment_active_recall", None)
 
                     # 4. Instant UI Toast
                     st.toast(f"✅ Saved Target #{current_q_idx + 1} ({current_student['student_name']}) as Contactable: {f_call_outcome}!", icon="🎯")
 
                     # 5. Advance queue index and save progress
-                    if current_q_idx + 1 < total_assigned_queue:
-                        st.session_state.enrollment_queue_index = current_q_idx + 1
-                        next_s = active_queue_students[current_q_idx + 1]
-                        save_enrollment_progress(current_spoc, current_q_idx + 1, next_s["contact_number"], active_call_index=st.session_state.get("enrollment_active_call_index", 0))
+                    if is_no_mode:
+                        if current_q_idx >= total_assigned_queue - 1:
+                            st.session_state.enrollment_no_queue_index = max(0, total_assigned_queue - 2)
+                        else:
+                            st.session_state.enrollment_no_queue_index = current_q_idx
+                    else:
+                        if current_q_idx + 1 < total_assigned_queue:
+                            st.session_state.enrollment_queue_index = current_q_idx + 1
+                            next_s = active_queue_students[current_q_idx + 1]
+                            save_enrollment_progress(current_spoc, current_q_idx + 1, next_s["contact_number"], active_call_index=st.session_state.get("enrollment_active_call_index", 0))
 
-                    # 6. Instant UI re-render
+                    time.sleep(0.1)
                     st.rerun()
                 except Exception as ex:
                     st.error(f"Error saving: {ex}")
@@ -2625,17 +2963,24 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
                     st.session_state.enrollment_live_history.insert(0, (current_student['row_num'], list(payload)))
                     st.session_state.enrollment_live_history = st.session_state.enrollment_live_history[:25]
                     st.session_state.pop("enrollment_editing_row", None)
+                    st.session_state.pop("enrollment_active_recall", None)
 
                     # 4. Instant UI Toast
                     st.toast(f"✅ Target #{current_q_idx + 1} ({current_student['student_name']}) saved successfully in Google Sheets!", icon="🎯")
 
                     # 5. Advance queue index and save progress
-                    if current_q_idx + 1 < total_assigned_queue:
-                        st.session_state.enrollment_queue_index = current_q_idx + 1
-                        next_s = active_queue_students[current_q_idx + 1]
-                        save_enrollment_progress(current_spoc, current_q_idx + 1, next_s["contact_number"], active_call_index=st.session_state.get("enrollment_active_call_index", 0))
+                    if is_no_mode:
+                        if current_q_idx >= total_assigned_queue - 1:
+                            st.session_state.enrollment_no_queue_index = max(0, total_assigned_queue - 2)
+                        else:
+                            st.session_state.enrollment_no_queue_index = current_q_idx
+                    else:
+                        if current_q_idx + 1 < total_assigned_queue:
+                            st.session_state.enrollment_queue_index = current_q_idx + 1
+                            next_s = active_queue_students[current_q_idx + 1]
+                            save_enrollment_progress(current_spoc, current_q_idx + 1, next_s["contact_number"], active_call_index=st.session_state.get("enrollment_active_call_index", 0))
 
-                    # 6. Instant UI re-render
+                    time.sleep(0.1)
                     st.rerun()
                 except Exception as ex:
                     st.error(f"Error saving: {ex}")

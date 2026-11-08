@@ -669,6 +669,8 @@ def render_placement_fresh_call_list(fresh_stats, current_spoc, all_placement_st
                 st.markdown(f"**Target #{it.get('queue_index', 0)+1}**: `{it['contact_number']}` &nbsp;·&nbsp; *{it['student_name']}* ({it.get('company_name', '')})")
             with col_i2:
                 if st.button("📞 Load", key=f"plc_btn_ld_{f_idx}_{it['row_num']}_{key_prefix}", use_container_width=True):
+                    # Switch off Not Contactable pinned mode when loading fresh call
+                    st.session_state.pin_placement_no_call_list = False
                     # Locate student in active_queue_students by row_num
                     target_idx = None
                     if active_queue_students:
@@ -807,7 +809,19 @@ def render_placement_not_contactable_list(fresh_stats, current_spoc, all_placeme
                 )
             with c2:
                 if st.button("🔁 Re-Call", key=f"plc_recall_{r_idx}_{r_num}_{key_prefix}", use_container_width=True):
-                    # 1. Locate student in active_queue_students by row_num
+                    # 1. Switch to Pinned Not Contactable Queue mode
+                    st.session_state.pin_placement_no_call_list = True
+                    st.session_state.pin_placement_fresh_call_list = False
+
+                    # 2. Locate student in no_items
+                    target_no_idx = None
+                    for no_i, no_s in enumerate(no_items):
+                        if no_s["row_num"] == r_num:
+                            target_no_idx = no_i
+                            break
+                    st.session_state.placement_no_queue_index = target_no_idx if target_no_idx is not None else 0
+
+                    # Also locate student in active_queue_students by row_num for fallback
                     target_idx = None
                     if active_queue_students:
                         for a_i, a_s in enumerate(active_queue_students):
@@ -815,7 +829,7 @@ def render_placement_not_contactable_list(fresh_stats, current_spoc, all_placeme
                                 target_idx = a_i
                                 break
 
-                    # 2. If not found in active queue, switch view or find in all_placement_students
+                    # 3. If not found in active queue, switch view or find in all_placement_students
                     if target_idx is not None:
                         st.session_state.placement_queue_index = target_idx
                     else:
@@ -838,7 +852,7 @@ def render_placement_not_contactable_list(fresh_stats, current_spoc, all_placeme
                                         break
                         st.session_state.placement_queue_index = target_idx if target_idx is not None else 0
 
-                    # 3. Store PRESET values into session state for this row so form loads student data
+                    # 4. Store PRESET values into session state for this row so form loads student data
                     st.session_state[f"plc_preset_{r_num}"] = {
                         "contactable": "No",
                         "assessment_given": normalize_tri_val(it.get("assessment_given"), "YES"),
@@ -860,14 +874,14 @@ def render_placement_not_contactable_list(fresh_stats, current_spoc, all_placeme
                         "remarks_2": it.get("remarks_2", "")
                     }
 
-                    # 4. Clear old widget states for this row to force fresh render from preset
+                    # 5. Clear old widget states for this row to force fresh render from preset
                     for k in list(st.session_state.keys()):
                         if f"_{r_num}" in k and k.startswith("plc_"):
                             st.session_state.pop(k, None)
                         elif k.startswith("plc_preset_") and k != f"plc_preset_{r_num}":
                             st.session_state.pop(k, None)
 
-                    # 5. Set editing & recall state flags
+                    # 6. Set editing & recall state flags
                     st.session_state.placement_editing_row = r_num
                     st.session_state.placement_active_recall = r_num
 
@@ -878,7 +892,7 @@ def render_placement_not_contactable_list(fresh_stats, current_spoc, all_placeme
                         it.get("contact_number", ""),
                         active_call_index=st.session_state.get("placement_active_call_index", 0)
                     )
-                    st.toast(f"Loaded Target #{target_idx + 1 if target_idx is not None else 1} ({it['student_name']}) for Re-Call! Change status to 'Yes' if reached.", icon="🔁")
+                    st.toast(f"Loaded Not Contactable Target #{target_no_idx + 1 if target_no_idx is not None else 1} ({it['student_name']}) for Re-Call! Change status to 'Yes' if reached.", icon="🔁")
                     st.rerun()
 
         if len(filtered) > 50:
@@ -1840,12 +1854,20 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
 
     def toggle_pin_no():
         st.session_state.pin_placement_no_call_list = not st.session_state.get("pin_placement_no_call_list", False)
+        if st.session_state.pin_placement_no_call_list:
+            st.session_state.pin_placement_fresh_call_list = False
+            if "placement_no_queue_index" not in st.session_state:
+                st.session_state.placement_no_queue_index = 0
 
     def unpin_no():
         st.session_state.pin_placement_no_call_list = False
+        st.session_state.pop("placement_editing_row", None)
+        st.session_state.pop("placement_active_recall", None)
 
     def toggle_pin_fresh():
         st.session_state.pin_placement_fresh_call_list = not st.session_state.get("pin_placement_fresh_call_list", False)
+        if st.session_state.pin_placement_fresh_call_list:
+            st.session_state.pin_placement_no_call_list = False
 
     def unpin_fresh():
         st.session_state.pin_placement_fresh_call_list = False
@@ -1865,10 +1887,16 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                 key_prefix="pop"
             )
             st.markdown("---")
-            st.checkbox(
+            chk_pin_fresh = st.checkbox(
                 "📌 Keep Fresh List pinned above form",
-                key="pin_placement_fresh_call_list"
+                value=st.session_state.get("pin_placement_fresh_call_list", False),
+                key=f"plc_chk_pin_fresh_{display_scope_name}"
             )
+            if chk_pin_fresh != st.session_state.get("pin_placement_fresh_call_list", False):
+                st.session_state.pin_placement_fresh_call_list = chk_pin_fresh
+                if chk_pin_fresh:
+                    st.session_state.pin_placement_no_call_list = False
+                st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
 
     with col_pop2:
@@ -1884,10 +1912,18 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                 key_prefix="pop"
             )
             st.markdown("---")
-            st.checkbox(
+            chk_pin_no = st.checkbox(
                 "📌 Keep 'No' List pinned above form",
-                key="pin_placement_no_call_list"
+                value=st.session_state.get("pin_placement_no_call_list", False),
+                key=f"plc_chk_pin_no_{display_scope_name}"
             )
+            if chk_pin_no != st.session_state.get("pin_placement_no_call_list", False):
+                st.session_state.pin_placement_no_call_list = chk_pin_no
+                if chk_pin_no:
+                    st.session_state.pin_placement_fresh_call_list = False
+                    if "placement_no_queue_index" not in st.session_state:
+                        st.session_state.placement_no_queue_index = 0
+                st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
 
     # 1-Click Pin / Unpin Quick Controls Bar
@@ -1964,44 +2000,100 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
 
     st.markdown("<div style='margin-bottom: 14px;'></div>", unsafe_allow_html=True)
 
-    # Queue index management
-    if "placement_queue_index" not in st.session_state:
-        saved_q, saved_act = get_saved_placement_index(current_spoc, active_queue_students)
-        st.session_state.placement_queue_index = saved_q
-        st.session_state.placement_active_call_index = saved_act
+    # Determine queue mode: Not Contactable mode vs Fresh Calling mode
+    no_queue_students = scope_stats.get("no_list", [])
+    is_no_mode = bool(st.session_state.get("pin_placement_no_call_list") and len(no_queue_students) > 0)
 
-    current_q_idx = st.session_state.placement_queue_index
+    if is_no_mode:
+        working_queue = no_queue_students
+        total_assigned_queue = len(working_queue)
+        if "placement_no_queue_index" not in st.session_state:
+            st.session_state.placement_no_queue_index = 0
 
-    # Fail-safe: if placement_editing_row or placement_active_recall is active, ensure current_student matches that row
-    active_target_row = st.session_state.get("placement_editing_row") or st.session_state.get("placement_active_recall")
-    if active_target_row:
-        found_active_idx = None
-        for idx, s in enumerate(active_queue_students):
-            if s["row_num"] == active_target_row:
-                found_active_idx = idx
-                break
-        if found_active_idx is not None:
-            current_q_idx = found_active_idx
-            st.session_state.placement_queue_index = current_q_idx
-        else:
-            for g_idx, s in enumerate(all_placement_students):
+        active_target_row = st.session_state.get("placement_editing_row") or st.session_state.get("placement_active_recall")
+        if active_target_row:
+            found_no_idx = None
+            for idx, s in enumerate(working_queue):
                 if s["row_num"] == active_target_row:
-                    active_queue_students = all_placement_students
-                    current_q_idx = g_idx
-                    st.session_state.placement_queue_index = current_q_idx
+                    found_no_idx = idx
                     break
+            if found_no_idx is not None:
+                st.session_state.placement_no_queue_index = found_no_idx
 
-    if current_q_idx >= len(active_queue_students):
-        current_q_idx = max(0, len(active_queue_students) - 1)
-        st.session_state.placement_queue_index = current_q_idx
+        current_q_idx = st.session_state.placement_no_queue_index
+        if current_q_idx >= total_assigned_queue:
+            current_q_idx = max(0, total_assigned_queue - 1)
+            st.session_state.placement_no_queue_index = current_q_idx
+        if current_q_idx < 0:
+            current_q_idx = 0
+            st.session_state.placement_no_queue_index = 0
 
-    current_student = active_queue_students[current_q_idx]
-    total_assigned_queue = len(active_queue_students)
+        current_student = working_queue[current_q_idx]
+
+        # Auto preset for this student if not yet present
+        r_num = current_student["row_num"]
+        if f"plc_preset_{r_num}" not in st.session_state:
+            st.session_state[f"plc_preset_{r_num}"] = {
+                "contactable": "No",
+                "assessment_given": normalize_tri_val(current_student.get("assessment_given"), "YES"),
+                "got_certificate": normalize_tri_val(current_student.get("got_certificate"), "YES"),
+                "got_job_from_anudip": normalize_tri_val(current_student.get("got_job_from_anudip"), "YES"),
+                "retention_status": current_student.get("retention_status") or "Working in same job",
+                "months": current_student.get("how_many_months") or ("3 Months" if current_student.get("retention_status") in ["Working in same job", "Working in different job"] else ""),
+                "company": current_student.get("current_company") or current_student.get("company_name", ""),
+                "salary": current_student.get("current_salary") or current_student.get("salary", ""),
+                "designation": current_student.get("current_designation") or current_student.get("designation", ""),
+                "doj": parse_date_safe(current_student.get("current_doj")) or parse_date_safe(current_student.get("doj")) or date.today(),
+                "need_further_job": normalize_tri_val(current_student.get("need_further_job"), "NO"),
+                "nps": current_student.get("nps") or "10",
+                "satisfied": current_student.get("satisfied_with_conversation") or "Yes",
+                "verification_date": date.today(),
+                "left_remarks": current_student.get("left_not_working_remarks", ""),
+                "not_joined_remarks": current_student.get("not_joined_remarks", "N/A"),
+                "nocont_reason": current_student.get("left_not_working_remarks", "") or "Did not respond to our call",
+                "remarks_2": current_student.get("remarks_2", "")
+            }
+        st.session_state.placement_active_recall = r_num
+    else:
+        working_queue = active_queue_students
+        total_assigned_queue = len(working_queue)
+        # Queue index management
+        if "placement_queue_index" not in st.session_state:
+            saved_q, saved_act = get_saved_placement_index(current_spoc, active_queue_students)
+            st.session_state.placement_queue_index = saved_q
+            st.session_state.placement_active_call_index = saved_act
+
+        current_q_idx = st.session_state.placement_queue_index
+
+        # Fail-safe: if placement_editing_row or placement_active_recall is active, ensure current_student matches that row
+        active_target_row = st.session_state.get("placement_editing_row") or st.session_state.get("placement_active_recall")
+        if active_target_row:
+            found_active_idx = None
+            for idx, s in enumerate(working_queue):
+                if s["row_num"] == active_target_row:
+                    found_active_idx = idx
+                    break
+            if found_active_idx is not None:
+                current_q_idx = found_active_idx
+                st.session_state.placement_queue_index = current_q_idx
+            else:
+                for g_idx, s in enumerate(all_placement_students):
+                    if s["row_num"] == active_target_row:
+                        working_queue = all_placement_students
+                        current_q_idx = g_idx
+                        st.session_state.placement_queue_index = current_q_idx
+                        break
+
+        if current_q_idx >= len(working_queue):
+            current_q_idx = max(0, len(working_queue) - 1)
+            st.session_state.placement_queue_index = current_q_idx
+
+        current_student = working_queue[current_q_idx]
 
     # ==========================================================================
     # 📍 RESUME BANNER (WELCOME BACK / RESUME PROGRESS LIKE IMPACT ASSESSMENT)
     # ==========================================================================
-    if st.session_state.get("show_placement_resume_banner") and total_assigned_queue > 0 and current_q_idx > 0:
+    if not is_no_mode and st.session_state.get("show_placement_resume_banner") and total_assigned_queue > 0 and current_q_idx > 0:
         res_c1, res_c2, res_c3 = st.columns([3.2, 1.2, 1.2])
         with res_c1:
             st.info(f"📍 **Welcome back, {current_spoc.title()}!** Resumed at Target **#{current_q_idx + 1}** of {total_assigned_queue} ({v_pending} fresh calls pending).")
@@ -2016,11 +2108,11 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                 save_placement_progress(current_spoc, 0, active_queue_students[0]["contact_number"], active_call_index=st.session_state.get("placement_active_call_index", 0))
                 st.rerun()
 
-    if v_pending == 0:
+    if not is_no_mode and v_pending == 0:
         st.success(f"🎉 **Outstanding work, {current_spoc.title()}!** All {v_assigned} assigned placement calls have been completed.")
 
-    # Re-Call Mode Active Banner
-    if st.session_state.get("placement_active_recall") == current_student["row_num"]:
+    # Re-Call Mode Active Banner (Only if not already in pinned not contactable mode)
+    if not is_no_mode and st.session_state.get("placement_active_recall") == current_student["row_num"]:
         st.markdown(f"""
             <div style="background: linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%); border: 1.5px solid #fed7aa; border-left: 6px solid #ea580c; border-radius: 10px; padding: 12px 18px; margin-bottom: 14px; box-shadow: 0 2px 6px rgba(234, 88, 12, 0.1);">
                 <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
@@ -2056,16 +2148,16 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
             # 1. Check if numeric target number (e.g. 71, 302, 1, 1153)
             if clean_num.isdigit():
                 t_num = int(clean_num)
-                # Check within active queue first
-                if 1 <= t_num <= len(active_queue_students):
+                # Check within working queue first
+                if 1 <= t_num <= len(working_queue):
                     target_idx = t_num - 1
-                    found_target = active_queue_students[target_idx]
+                    found_target = working_queue[target_idx]
                 else:
                     # Search across all students
                     for s in all_placement_students:
                         if s["queue_index"] + 1 == t_num or s["row_num"] == t_num:
                             found_target = s
-                            for a_idx, a_s in enumerate(active_queue_students):
+                            for a_idx, a_s in enumerate(working_queue):
                                 if a_s["row_num"] == s["row_num"]:
                                     target_idx = a_idx
                                     break
@@ -2075,7 +2167,7 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
             if not found_target:
                 c_phone = clean_phone(target)
                 if c_phone:
-                    for idx, s in enumerate(active_queue_students):
+                    for idx, s in enumerate(working_queue):
                         if c_phone in clean_phone(s["contact_number"]) or c_phone in clean_phone(s["alt_contact_number"]):
                             target_idx = idx
                             found_target = s
@@ -2089,7 +2181,7 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
             # 3. Check if student name
             if not found_target:
                 t_lower = target.lower()
-                for idx, s in enumerate(active_queue_students):
+                for idx, s in enumerate(working_queue):
                     if t_lower in s["student_name"].lower():
                         target_idx = idx
                         found_target = s
@@ -2102,7 +2194,10 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
 
             if found_target:
                 if target_idx is not None:
-                    st.session_state.placement_queue_index = target_idx
+                    if is_no_mode:
+                        st.session_state.placement_no_queue_index = target_idx
+                    else:
+                        st.session_state.placement_queue_index = target_idx
                 else:
                     st.session_state.plc_perf_view = "🌟 All Team Combined (Portal Total)"
                     st.session_state.plc_perf_view_selector_box = "🌟 All Team Combined (Portal Total)"
@@ -2136,38 +2231,47 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                         st.session_state.pop(k, None)
                     st.session_state.placement_editing_row = r_num
 
-                st.toast(f"Loaded Target #{found_target['queue_index']+1} ({found_target['student_name']})!", icon="⚡")
+                st.toast(f"Loaded Target #{found_target.get('queue_index', 0)+1} ({found_target['student_name']})!", icon="⚡")
                 st.rerun()
             else:
                 st.warning(f"No student record found matching '{target}'.")
 
     # 1. ⏮ #1 Button
     if c_start.button("⏮ #1", use_container_width=True, help="Jump to Target #1 (Queue beginning)", disabled=(current_q_idx == 0 or total_assigned_queue == 0)):
-        st.session_state.placement_queue_index = 0
+        if is_no_mode:
+            st.session_state.placement_no_queue_index = 0
+        else:
+            st.session_state.placement_queue_index = 0
+            save_placement_progress(current_spoc, 0, active_queue_students[0]["contact_number"], active_call_index=st.session_state.get("placement_active_call_index", 0))
         st.session_state.pop("placement_editing_row", None)
         st.session_state.pop("placement_active_recall", None)
-        save_placement_progress(current_spoc, 0, active_queue_students[0]["contact_number"], active_call_index=st.session_state.get("placement_active_call_index", 0))
         st.toast("Jumped to Target #1!", icon="⏮️")
         st.rerun()
 
     # 2. ⬅ Prev Button
     if c_prev.button("⬅ Prev", use_container_width=True, disabled=(current_q_idx <= 0 or total_assigned_queue == 0)):
-        st.session_state.placement_queue_index = max(0, current_q_idx - 1)
+        if is_no_mode:
+            st.session_state.placement_no_queue_index = max(0, current_q_idx - 1)
+        else:
+            st.session_state.placement_queue_index = max(0, current_q_idx - 1)
+            prev_s = active_queue_students[st.session_state.placement_queue_index]
+            save_placement_progress(current_spoc, st.session_state.placement_queue_index, prev_s["contact_number"], active_call_index=st.session_state.get("placement_active_call_index", 0))
         st.session_state.pop("placement_editing_row", None)
         st.session_state.pop("placement_active_recall", None)
-        prev_s = active_queue_students[st.session_state.placement_queue_index]
-        save_placement_progress(current_spoc, st.session_state.placement_queue_index, prev_s["contact_number"], active_call_index=st.session_state.get("placement_active_call_index", 0))
         st.rerun()
 
     # 3. Next ➡ Button
     if c_next.button("Next ➡", use_container_width=True, disabled=(current_q_idx >= total_assigned_queue - 1 or total_assigned_queue == 0)):
-        st.session_state.placement_queue_index = min(total_assigned_queue - 1, current_q_idx + 1)
+        if is_no_mode:
+            st.session_state.placement_no_queue_index = min(total_assigned_queue - 1, current_q_idx + 1)
+        else:
+            st.session_state.placement_queue_index = min(total_assigned_queue - 1, current_q_idx + 1)
+            if st.session_state.placement_queue_index > st.session_state.get("placement_active_call_index", 0):
+                st.session_state.placement_active_call_index = st.session_state.placement_queue_index
+            next_s = active_queue_students[st.session_state.placement_queue_index]
+            save_placement_progress(current_spoc, st.session_state.placement_queue_index, next_s["contact_number"], active_call_index=st.session_state.get("placement_active_call_index", 0))
         st.session_state.pop("placement_editing_row", None)
         st.session_state.pop("placement_active_recall", None)
-        if st.session_state.placement_queue_index > st.session_state.get("placement_active_call_index", 0):
-            st.session_state.placement_active_call_index = st.session_state.placement_queue_index
-        next_s = active_queue_students[st.session_state.placement_queue_index]
-        save_placement_progress(current_spoc, st.session_state.placement_queue_index, next_s["contact_number"], active_call_index=st.session_state.get("placement_active_call_index", 0))
         st.rerun()
 
     # 4. 🧹 Clear Form Button
@@ -2196,6 +2300,11 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
     col_t1, col_t2 = st.columns([5, 1.1])
     phone_clean = clean_phone(current_student['contact_number'])
 
+    banner_bg = "linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%)" if is_no_mode else "linear-gradient(135deg, #e8f0fe 0%, #f0f7ff 100%)"
+    banner_border = "#ea580c" if is_no_mode else "#1a73e8"
+    banner_text_col = "#9a3412" if is_no_mode else "#1e3a8a"
+    banner_title_html = f"📞 Calling Not Contactable Target <b>#{current_q_idx + 1} of {total_assigned_queue}</b> (Target #{current_student.get('queue_index', 0) + 1})" if is_no_mode else f"🎯 Calling Target <b>#{current_q_idx + 1} of {total_assigned_queue}</b>"
+
     with col_t1:
         components.html(f"""
         <!DOCTYPE html>
@@ -2210,10 +2319,10 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
             }}
             .queue-banner {{
-                background: linear-gradient(135deg, #e8f0fe 0%, #f0f7ff 100%);
+                background: {banner_bg};
                 padding: 8px 16px;
                 border-radius: 8px;
-                border-left: 5px solid #1a73e8;
+                border-left: 5px solid {banner_border};
                 display: flex;
                 justify-content: space-between;
                 align-items: center;
@@ -2221,7 +2330,7 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
             }}
             .banner-left {{
                 font-size: 1.0rem;
-                color: #1e3a8a;
+                color: {banner_text_col};
                 font-weight: 700;
                 display: flex;
                 align-items: center;
@@ -2267,7 +2376,7 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
         <body>
         <div class="queue-banner">
             <div class="banner-left">
-                <span>🎯 Calling Target <b>#{current_q_idx + 1} of {total_assigned_queue}</b></span>
+                <span>{banner_title_html}</span>
                 <span>·</span>
                 <span style="color: #0f172a;">{current_student['student_name']}</span>
                 <span>·</span>
@@ -2320,11 +2429,14 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
 
     with col_t2:
         if st.button("⏭️ Skip", use_container_width=True, key=f"plc_skip_btn_{current_student['row_num']}"):
-            st.session_state.placement_queue_index = min(total_assigned_queue - 1, current_q_idx + 1)
             st.session_state.pop("placement_editing_row", None)
             st.session_state.pop("placement_active_recall", None)
-            next_s = active_queue_students[st.session_state.placement_queue_index]
-            save_placement_progress(current_spoc, st.session_state.placement_queue_index, next_s["contact_number"], active_call_index=st.session_state.get("placement_active_call_index", 0))
+            if is_no_mode:
+                st.session_state.placement_no_queue_index = min(total_assigned_queue - 1, current_q_idx + 1)
+            else:
+                st.session_state.placement_queue_index = min(total_assigned_queue - 1, current_q_idx + 1)
+                next_s = active_queue_students[st.session_state.placement_queue_index]
+                save_placement_progress(current_spoc, st.session_state.placement_queue_index, next_s["contact_number"], active_call_index=st.session_state.get("placement_active_call_index", 0))
             st.toast("Skipped to next target", icon="⏭️")
             st.rerun()
 
@@ -2383,7 +2495,19 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
     cstatus_fg = "#166534" if cur_cstatus == "Done" else "#92400e"
     cstatus_bd = "#bbf7d0" if cur_cstatus == "Done" else "#fde68a"
 
-    status_badge_html = f"""
+    if is_no_mode:
+        status_badge_html = f"""
+        <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+            <span style="background: #e0f2fe; color: #0369a1; border: 1.5px solid #bae6fd; padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 0.84rem;">
+                🏷️ Call ID: {cur_cid}
+            </span>
+            <span style="background: #fff7ed; color: #9a3412; border: 1.5px solid #fed7aa; padding: 4px 10px; border-radius: 6px; font-weight: 800; font-size: 0.86rem;">
+                📞 NOT CONTACTABLE RE-CALL (#{current_q_idx + 1} of {total_assigned_queue})
+            </span>
+        </div>
+        """
+    elif is_edit_mode or is_already_verified:
+        status_badge_html = f"""
         <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
             <span style="background: #e0f2fe; color: #0369a1; border: 1.5px solid #bae6fd; padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 0.84rem;">
                 🏷️ Call ID: {cur_cid}
@@ -2395,7 +2519,9 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                 ✏️ EDIT & UPDATE MODE (Row #{current_student['row_num']})
             </span>
         </div>
-    """ if (is_edit_mode or is_already_verified) else f"""
+        """
+    else:
+        status_badge_html = f"""
         <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
             <span style="background: #e0f2fe; color: #0369a1; border: 1.5px solid #bae6fd; padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 0.84rem;">
                 🏷️ Call ID: {cur_cid}
@@ -2407,7 +2533,7 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                 🆕 FRESH CALL VERIFICATION (Target #{current_q_idx + 1})
             </span>
         </div>
-    """
+        """
 
     st.markdown('<div class="profile-card-enhanced" style="border-top: 4px solid #f59e0b;">', unsafe_allow_html=True)
     st.markdown(f"""
@@ -2419,8 +2545,17 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
         </div>
     """, unsafe_allow_html=True)
 
-    # Edit Mode Alert Banner (Loads previous values for update & insert per Item 1)
-    if is_edit_mode or is_already_verified:
+    # Mode Alert Banner
+    if is_no_mode:
+        st.markdown(f"""
+            <div style="background: #fff7ed; border: 1.5px solid #fed7aa; border-left: 6px solid #ea580c; padding: 10px 14px; border-radius: 8px; margin-bottom: 14px;">
+                <b style="color: #9a3412; font-size: 0.98rem;">📞 Not Contactable Re-Call: Target #{current_q_idx + 1} of {total_assigned_queue} — {current_student['student_name']} (Original Target #{current_student.get('queue_index', 0) + 1}, Row #{current_student['row_num']}):</b>
+                <div style="color: #c2410c; font-size: 0.85rem; margin-top: 2px;">
+                    Previously unreached ({current_student.get('left_not_working_remarks') or 'Not Contactable'}). If the student answers now, select <b>'Yes'</b> to complete placement verification. Otherwise, update reason and save to progress to next.
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+    elif is_edit_mode or is_already_verified:
         st.markdown(f"""
             <div style="background: #fffbeb; border: 1.5px solid #fde68a; border-left: 6px solid #d97706; padding: 10px 14px; border-radius: 8px; margin-bottom: 14px;">
                 <b style="color: #92400e; font-size: 0.98rem;">✏️ Reviewing & Updating Target #{current_q_idx + 1} — {current_student['student_name']} (Row #{current_student['row_num']}):</b>
@@ -2564,10 +2699,16 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                     # 4. Instant UI Toast
                     st.toast(f"✅ Saved Target #{current_q_idx + 1} ({current_student['student_name']}) as Not Contactable!", icon="🚫")
 
-                    if current_q_idx + 1 < total_assigned_queue:
-                        st.session_state.placement_queue_index = current_q_idx + 1
-                        next_s = active_queue_students[current_q_idx + 1]
-                        save_placement_progress(current_spoc, current_q_idx + 1, next_s["contact_number"], active_call_index=st.session_state.get("placement_active_call_index", 0))
+                    if is_no_mode:
+                        if current_q_idx + 1 < total_assigned_queue:
+                            st.session_state.placement_no_queue_index = current_q_idx + 1
+                        else:
+                            st.session_state.placement_no_queue_index = 0
+                    else:
+                        if current_q_idx + 1 < total_assigned_queue:
+                            st.session_state.placement_queue_index = current_q_idx + 1
+                            next_s = active_queue_students[current_q_idx + 1]
+                            save_placement_progress(current_spoc, current_q_idx + 1, next_s["contact_number"], active_call_index=st.session_state.get("placement_active_call_index", 0))
 
                     time.sleep(0.1)
                     st.rerun()
@@ -3113,10 +3254,16 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                         # 4. Instant UI Toast
                         st.toast(f"✅ Target #{current_q_idx + 1} ({current_student['student_name']}) saved successfully in Google Sheets!", icon="🎯")
 
-                        if current_q_idx + 1 < total_assigned_queue:
-                            st.session_state.placement_queue_index = current_q_idx + 1
-                            next_s = active_queue_students[current_q_idx + 1]
-                            save_placement_progress(current_spoc, current_q_idx + 1, next_s["contact_number"], active_call_index=st.session_state.get("placement_active_call_index", 0))
+                        if is_no_mode:
+                            if current_q_idx >= total_assigned_queue - 1:
+                                st.session_state.placement_no_queue_index = max(0, total_assigned_queue - 2)
+                            else:
+                                st.session_state.placement_no_queue_index = current_q_idx
+                        else:
+                            if current_q_idx + 1 < total_assigned_queue:
+                                st.session_state.placement_queue_index = current_q_idx + 1
+                                next_s = active_queue_students[current_q_idx + 1]
+                                save_placement_progress(current_spoc, current_q_idx + 1, next_s["contact_number"], active_call_index=st.session_state.get("placement_active_call_index", 0))
 
                         time.sleep(0.1)
                         st.rerun()
