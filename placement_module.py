@@ -334,7 +334,7 @@ def get_saved_placement_index(spoc_name, student_list):
 # ==============================================================================
 # 📊 IN-MEMORY CACHE & BACKGROUND SYNC ENGINE
 # ==============================================================================
-def update_in_memory_placement_row(row_num, payload, call_status="Done", call_id=None, concat=None):
+def update_in_memory_placement_row(row_num, payload, call_status=None, call_id=None, concat=None):
     """Updates the session master rows immediately in memory (sub-millisecond)."""
     if "placement_master_rows" in st.session_state and st.session_state.placement_master_rows:
         m_rows = st.session_state.placement_master_rows
@@ -349,6 +349,8 @@ def update_in_memory_placement_row(row_num, payload, call_status="Done", call_id
                         curr[16 + i] = str(val)
             if call_status is not None:
                 curr[33] = str(call_status)
+            elif len(curr) > 33 and not curr[33]:
+                curr[33] = "Progress"
             if call_id is not None:
                 curr[34] = str(call_id)
             spoc = str(curr[0]).strip() if len(curr) > 0 else ""
@@ -394,7 +396,7 @@ def batch_update_in_memory_placement_rows(updates_map):
                 m_rows[idx] = curr
         st.session_state.placement_master_rows = m_rows
 
-def _bg_placement_sync_worker(ws, row_num, payload, call_status="Done", call_id="1153", concat=None):
+def _bg_placement_sync_worker(ws, row_num, payload, call_status=None, call_id=None, concat=None):
     """
     Background worker: Syncs row to Google Sheets without blocking UI.
     """
@@ -403,11 +405,13 @@ def _bg_placement_sync_worker(ws, row_num, payload, call_status="Done", call_id=
             if payload and len(payload) > 0:
                 ws.update(values=[payload], range_name=f"Q{row_num}:AG{row_num}")
             try:
-                c_concat = str(concat) if concat is not None else f"{call_id}"
+                c_status = str(call_status) if call_status is not None else "Progress"
+                c_cid = str(call_id) if call_id is not None else "1153"
+                c_concat = str(concat) if concat is not None else f"{c_cid}"
                 if ws.col_count >= 36:
-                    ws.update(values=[[call_status, call_id, c_concat]], range_name=f"AH{row_num}:AJ{row_num}")
+                    ws.update(values=[[c_status, c_cid, c_concat]], range_name=f"AH{row_num}:AJ{row_num}")
                 elif ws.col_count >= 35:
-                    ws.update(values=[[call_status, call_id]], range_name=f"AH{row_num}:AI{row_num}")
+                    ws.update(values=[[c_status, c_cid]], range_name=f"AH{row_num}:AI{row_num}")
             except Exception:
                 pass
     except Exception as e:
@@ -424,7 +428,7 @@ def _bg_batch_sheet_worker(ws, batch_updates):
     except Exception as e:
         print(f"[Placement BG Batch Sync Error]: {e}")
 
-def dispatch_placement_sync(ws, row_num, payload, call_status="Done", call_id="1153", concat=None):
+def dispatch_placement_sync(ws, row_num, payload, call_status=None, call_id=None, concat=None):
     _PLACEMENT_BG_EXECUTOR.submit(_bg_placement_sync_worker, ws, row_num, list(payload), call_status, call_id, concat)
 
 def fetch_placement_master_data(_placement_ws):
@@ -453,7 +457,7 @@ def parse_all_placement_students(all_rows):
             padded = list(r) + [""] * max(0, 36 - len(r))
             raw_cont = padded[16].strip()
             raw_vdate = padded[28].strip()
-            call_status = padded[33].strip() if len(padded) > 33 and padded[33].strip() else ("Done" if (raw_cont.lower() in ["yes", "no"] or raw_vdate) else "Progress")
+            call_status = padded[33].strip() if len(padded) > 33 and padded[33].strip() else "Progress"
             call_id = padded[34].strip() if len(padded) > 34 and padded[34].strip() else ("1153" if r_idx <= 1154 else "1000")
             concat = padded[35].strip() if len(padded) > 35 and padded[35].strip() else f"{assigned_spoc}{call_id}"
             students.append({
@@ -958,8 +962,7 @@ def build_placement_csv(students_subset, live_history=None, headers=None):
         satisfied = lp[15] if lp and len(lp) > 15 else s.get("satisfied_with_conversation", "")
         rem2 = lp[16] if lp and len(lp) > 16 else s.get("remarks_2", "")
 
-        is_done = (contactable.strip().lower() in ["yes", "no"]) or bool(vdate.strip())
-        row_status = "Done" if is_done else "Progress"
+        row_status = s.get("call_status", "Progress")
         row_call_id = s.get("call_id") or ("1153" if (r_num and r_num <= 1154) else "1000")
         row_concat = s.get("concat") or f"{s.get('called_by', '')}{row_call_id}"
 
@@ -1062,8 +1065,8 @@ def render_placement_sidebar_download(all_placement_students, current_spoc, is_a
         filtered_spoc_records = [s for s in spoc_records if str(s.get("call_id", "")).strip() == sel_call_id]
 
     # Calculate status groups
-    done_students = []
-    progress_students = []
+    called_students = []
+    pending_students = []
     yes_students = []
     no_students = []
 
@@ -1072,49 +1075,54 @@ def render_placement_sidebar_download(all_placement_students, current_spoc, is_a
         lp = live_map.get(r_num)
         cont = lp[0].strip().lower() if (lp and len(lp) > 0) else s.get("contactable", "").strip().lower()
         vdate = lp[12].strip() if (lp and len(lp) > 12) else s.get("verification_date", "").strip()
-        is_done = (cont in ["yes", "no"]) or bool(vdate)
+        is_called = (cont in ["yes", "no"]) or bool(vdate)
 
-        if is_done:
-            done_students.append(s)
+        if is_called:
+            called_students.append(s)
             if cont == "yes":
                 yes_students.append(s)
             else:
                 no_students.append(s)
         else:
-            progress_students.append(s)
+            pending_students.append(s)
 
     total_students = filtered_spoc_records
-    done_cnt = len(done_students)
-    prog_cnt = len(progress_students)
+    called_cnt = len(called_students)
+    pending_cnt = len(pending_students)
     yes_cnt = len(yes_students)
     no_cnt = len(no_students)
     total_cnt = len(total_students)
+    c_done = sum(1 for s in filtered_spoc_records if s.get("call_status", "").lower() == "done")
+    c_prog = total_cnt - c_done
 
     sheet_headers = None
     if all_rows and len(all_rows) > 0 and len(all_rows[0]) >= 33:
         sheet_headers = [str(h).strip() for h in all_rows[0][:33]]
 
     # Styled container matching the green outline
+    scope_badge_text = "🔒 Batch: DONE" if (total_cnt > 0 and c_prog == 0) else "⏳ Batch: IN PROGRESS"
+    scope_badge_color = "#15803d" if (total_cnt > 0 and c_prog == 0) else "#b45309"
     st.sidebar.markdown(f"""
         <div style="background: #ffffff; border: 2.2px solid #22c55e; border-radius: 10px; padding: 12px 14px; margin-top: 10px; margin-bottom: 12px; box-shadow: 0 2px 10px rgba(34, 197, 94, 0.15);">
             <div style="font-weight: 800; color: #15803d; font-size: 0.96rem; text-align: center; text-transform: uppercase; letter-spacing: 0.5px;">
                 📥 Data Download ({display_spoc_label})
             </div>
             <div style="display: flex; justify-content: space-around; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; padding: 6px 4px; font-size: 0.78rem; font-weight: 700; margin-top: 8px;">
-                <span style="color: #15803d;">✅ Done: {done_cnt}</span>
-                <span style="color: #ea580c;">⏳ Progress: {prog_cnt}</span>
+                <span style="color: #15803d;">📞 Called: {called_cnt}</span>
+                <span style="color: #ea580c;">⏳ Pending: {pending_cnt}</span>
                 <span style="color: #1e40af;">📊 Total: {total_cnt}</span>
             </div>
             <div style="display: flex; justify-content: space-around; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 4px 4px; font-size: 0.76rem; font-weight: 600; margin-top: 4px;">
                 <span style="color: #16a34a;">🟢 Yes: {yes_cnt}</span>
                 <span style="color: #dc2626;">🔴 No: {no_cnt}</span>
+                <span style="color: {scope_badge_color}; font-weight: 700;">{scope_badge_text}</span>
             </div>
         </div>
     """, unsafe_allow_html=True)
 
     # Quick action for SPOC to mark calls as Done for the selected Call ID scope
-    if prog_cnt > 0 and len(filtered_spoc_records) > 0:
-        btn_label = f"🏁 Mark '{sel_call_id}' as DONE & Lock ({prog_cnt})" if sel_call_id != "All Call IDs" else f"🏁 Mark ALL as DONE & Lock ({prog_cnt})"
+    if any(s.get("call_status", "").lower() != "done" for s in filtered_spoc_records) and len(filtered_spoc_records) > 0:
+        btn_label = f"🏁 Mark Scope '{sel_call_id}' as DONE & Lock ({total_cnt})" if sel_call_id != "All Call IDs" else f"🏁 Mark ALL as DONE & Lock ({total_cnt})"
         if st.sidebar.button(btn_label, type="primary", key=f"sb_plc_all_done_{safe_name}_{sel_call_id}", use_container_width=True, help="Update Call_Status to Done & Lock for your calls in this batch"):
             updates_map = {}
             batch_updates = []
@@ -1144,22 +1152,22 @@ def render_placement_sidebar_download(all_placement_students, current_spoc, is_a
             time.sleep(0.2)
             st.rerun()
 
-    # 1. Download 'Call Done' Data (Completed Calls)
+    # 1. Download Verified/Called Data (Completed Calls)
     file_cid_suffix = f"_{sel_call_id}" if sel_call_id != "All Call IDs" else ""
-    done_csv = build_placement_csv(done_students, live_history, headers=sheet_headers)
+    called_csv = build_placement_csv(called_students, live_history, headers=sheet_headers)
     st.sidebar.download_button(
-        label=f"✅ Download 'Call Done' Data ({done_cnt})",
-        data=done_csv,
-        file_name=f"Placement_CallDone_Data_{safe_name}{file_cid_suffix}_{now_str}.csv",
+        label=f"✅ Download Verified Calls ({called_cnt})",
+        data=called_csv,
+        file_name=f"Placement_Verified_Calls_{safe_name}{file_cid_suffix}_{now_str}.csv",
         mime="text/csv",
         use_container_width=True,
         key=f"sb_dl_plc_done_{safe_name}_{sel_call_id}"
     )
 
-    # 2. Download 'In Progress' Data (For reassigning if SPOC left)
-    prog_csv = build_placement_csv(progress_students, live_history, headers=sheet_headers)
+    # 2. Download Pending Calls (Uncalled calls for reassigning if SPOC left)
+    prog_csv = build_placement_csv(pending_students, live_history, headers=sheet_headers)
     st.sidebar.download_button(
-        label=f"⏳ Download 'In Progress' Data ({prog_cnt})",
+        label=f"⏳ Download Pending Fresh Calls ({pending_cnt})",
         data=prog_csv,
         file_name=f"Placement_InProgress_Data_{safe_name}{file_cid_suffix}_{now_str}.csv",
         mime="text/csv",
@@ -1765,12 +1773,12 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
     if selected_board_cid != "All Call IDs":
         is_cur_locked = is_placement_batch_locked(spoc_target_name, selected_board_cid, spoc_all_for_target)
         c_tot = len([s for s in spoc_all_for_target if str(s.get("call_id", "")).strip() == selected_board_cid])
-        c_done = sum(1 for s in spoc_all_for_target if str(s.get("call_id", "")).strip() == selected_board_cid and s.get("call_status") == "Done")
-        c_prog = c_tot - c_done
+        c_called = sum(1 for s in spoc_all_for_target if str(s.get("call_id", "")).strip() == selected_board_cid and str(s.get("contactable", "")).strip().lower() in ["yes", "no"])
+        c_pending = c_tot - c_called
         if is_cur_locked:
             st.markdown(f"<div style='font-size: 0.84rem; padding: 4px 10px; background: #dcfce7; border: 1.2px solid #86efac; border-radius: 6px; color: #166534; font-weight: 700; display: inline-block; margin-bottom: 10px;'>🔒 Batch <b>{selected_board_cid}</b>: LOCKED & COMPLETED ({c_tot}/{c_tot} Done) for {spoc_target_name.title()} &nbsp;|&nbsp; Concat: <code>{spoc_target_name.title()}{selected_board_cid}</code></div>", unsafe_allow_html=True)
         else:
-            st.markdown(f"<div style='font-size: 0.84rem; padding: 4px 10px; background: #eff6ff; border: 1.2px solid #bfdbfe; border-radius: 6px; color: #1e40af; font-weight: 700; display: inline-block; margin-bottom: 10px;'>⏳ Batch <b>{selected_board_cid}</b>: IN PROGRESS ({c_done} Done, {c_prog} Pending) for {spoc_target_name.title()} &nbsp;|&nbsp; Concat: <code>{spoc_target_name.title()}{selected_board_cid}</code></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='font-size: 0.84rem; padding: 4px 10px; background: #eff6ff; border: 1.2px solid #bfdbfe; border-radius: 6px; color: #1e40af; font-weight: 700; display: inline-block; margin-bottom: 10px;'>⏳ Batch <b>{selected_board_cid}</b>: IN PROGRESS ({c_called}/{c_tot} Calls Made &nbsp;|&nbsp; {c_pending} Fresh Pending) for {spoc_target_name.title()} &nbsp;|&nbsp; Concat: <code>{spoc_target_name.title()}{selected_board_cid}</code></div>", unsafe_allow_html=True)
 
     for i, s in enumerate(scoped_students):
         s["queue_index"] = i
@@ -2490,7 +2498,7 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
     is_edit_mode = st.session_state.get("placement_editing_row") == current_student["row_num"]
 
     cur_cid = current_student.get("call_id", "1153" if current_student["row_num"] <= 1154 else "1000")
-    cur_cstatus = "Done" if (is_edit_mode or is_already_verified) else current_student.get("call_status", "Progress")
+    cur_cstatus = current_student.get("call_status", "Progress")
     cstatus_bg = "#dcfce7" if cur_cstatus == "Done" else "#fef3c7"
     cstatus_fg = "#166534" if cur_cstatus == "Done" else "#92400e"
     cstatus_bd = "#bbf7d0" if cur_cstatus == "Done" else "#fde68a"
@@ -2678,14 +2686,15 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                 try:
                     p_cid = current_student.get("call_id") or ("1153" if current_student["row_num"] <= 1154 else "1000")
                     p_concat = current_student.get("concat") or f"{current_student.get('called_by', '')}{p_cid}"
-                    current_student["call_status"] = "Done"
+                    p_status = current_student.get("call_status", "Progress")
+                    current_student["call_status"] = p_status
                     current_student["concat"] = p_concat
 
                     # 1. Update in-memory session rows immediately (Sub-millisecond)
-                    update_in_memory_placement_row(current_student['row_num'], payload, call_status="Done", call_id=p_cid, concat=p_concat)
+                    update_in_memory_placement_row(current_student['row_num'], payload, call_status=p_status, call_id=p_cid, concat=p_concat)
 
                     # 2. Asynchronous background sync to Google Sheets (Zero UI wait)
-                    dispatch_placement_sync(placement_ws, current_student['row_num'], payload, call_status="Done", call_id=p_cid, concat=p_concat)
+                    dispatch_placement_sync(placement_ws, current_student['row_num'], payload, call_status=p_status, call_id=p_cid, concat=p_concat)
 
                     # 3. Update session live history (deduplicated by row_num)
                     st.session_state.placement_live_history = [
@@ -3233,14 +3242,15 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
                     try:
                         p_cid = current_student.get("call_id") or ("1153" if current_student["row_num"] <= 1154 else "1000")
                         p_concat = current_student.get("concat") or f"{current_student.get('called_by', '')}{p_cid}"
-                        current_student["call_status"] = "Done"
+                        p_status = current_student.get("call_status", "Progress")
+                        current_student["call_status"] = p_status
                         current_student["concat"] = p_concat
 
                         # 1. Update in-memory session rows immediately (Sub-millisecond)
-                        update_in_memory_placement_row(current_student['row_num'], payload, call_status="Done", call_id=p_cid, concat=p_concat)
+                        update_in_memory_placement_row(current_student['row_num'], payload, call_status=p_status, call_id=p_cid, concat=p_concat)
 
                         # 2. Asynchronous background sync to Google Sheets (Zero UI wait)
-                        dispatch_placement_sync(placement_ws, current_student['row_num'], payload, call_status="Done", call_id=p_cid, concat=p_concat)
+                        dispatch_placement_sync(placement_ws, current_student['row_num'], payload, call_status=p_status, call_id=p_cid, concat=p_concat)
 
                         # 3. Update session live history (deduplicated by row_num)
                         st.session_state.placement_live_history = [

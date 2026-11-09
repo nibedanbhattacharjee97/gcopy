@@ -1,0 +1,3420 @@
+import streamlit as st
+import streamlit.components.v1 as components
+from datetime import date, datetime
+import json
+import os
+import re
+import time
+import urllib.parse
+import csv
+import io
+import warnings
+from concurrent.futures import ThreadPoolExecutor
+
+# Suppress Streamlit deprecation warnings for clean console logs (resolves Picture 3 issue)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", message=".*st\\.components\\.v1\\.html.*")
+warnings.filterwarnings("ignore", message=".*st\\.iframe.*")
+
+PROGRESS_PLACEMENT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "spoc_placement_progress.json")
+DATA_CACHE_TTL = 900  # 15 minutes TTL for zero API rate limit and lightning speed
+
+# High speed asynchronous background thread pool (Zero UI lag)
+_PLACEMENT_BG_EXECUTOR = ThreadPoolExecutor(max_workers=4)
+
+# ==============================================================================
+# 🎯 DROPDOWN CONSTANTS (MATCHING PLACEMENT EXCEL & USER SPECIFICATION - PICTURE 4)
+# ==============================================================================
+
+# Contactable == Yes Retention Status options
+PLACEMENT_RETENTION_OPTIONS_YES = [
+    "Working in same job",
+    "Not_working_at_all",
+    "Working in different job",
+    "Confirmed Name But Didn't Share Any Information.",
+    "Left_The_Job",
+    "Will joined after some days"
+]
+
+# Contactable == No Retention Status option
+PLACEMENT_RETENTION_OPTIONS_NO = [
+    "Unable_to_track"
+]
+
+# All options combined for backward compatibility
+PLACEMENT_RETENTION_OPTIONS = PLACEMENT_RETENTION_OPTIONS_YES + PLACEMENT_RETENTION_OPTIONS_NO
+
+# Image 4 - Column 2: Unable_to_track reasons (When Contactable == No)
+PLACEMENT_UNABLE_TO_TRACK_OPTIONS = [
+    "Did not respond to our call",
+    "Incoming Call Is Not Available",
+    "Switched off",
+    "Network issue",
+    "Wrong Number",
+    "Call Disconnected / Busy",
+    "Language issue",
+    "Not a student of Anudip",
+    "Incoming Call Is Not Avialable"
+]
+
+# Image 4 - Column 1: Not_working_at_all reasons (First-level under Not_working_at_all)
+PLACEMENT_NOT_WORKING_OPTIONS = [
+    "Did_not_joined_job_due_to_personal_issue",
+    "Did_not_joined_job_due_to_profile_issue",
+    "Did not get any information from the employer",
+    "Did not get selected",
+    "Did Not Attend Any Interview",
+    "Dont Share any Information"
+]
+
+# Image 4 - Column 3: Did_not_joined_job_due_to_personal_issue sub-reasons
+PLACEMENT_NOT_JOINED_PERSONAL_OPTIONS = [
+    "Distance Issue",
+    "As The Student Is Pursuing 1st Year",
+    "As The Student Is Pursuing 2nd Year",
+    "As The Student Is Pursuing 3rd Year",
+    "Medical Issue",
+    "Dont Want To Share"
+]
+
+# Image 4 - Column 4: Did_not_joined_job_due_to_profile_issue sub-reasons
+PLACEMENT_NOT_JOINED_PROFILE_OPTIONS = [
+    "Issue Regarding Job Role",
+    "Issue Regarding Salary"
+]
+
+# Image 4 - Column 5: Left_The_Job reasons
+PLACEMENT_LEFT_JOB_OPTIONS = [
+    "Distance Issue",
+    "Pursuing Higher Studies.",
+    "Job Profile Did Not Match",
+    "Family Issue",
+    "Medical & Health Issue",
+    "Don't Want To Share",
+    "Casually Left The Job.",
+    "Salary Issue",
+    "Heavy Workload",
+    "Unhealthy Work Environment.",
+    "Office Timing",
+    "Night Shift",
+    "Internship/Project Completed",
+    "Company Closed"
+
+]
+
+PLACEMENT_CONFIRMED_NAME_OPTIONS = [
+    "Confirmed Name But Didn't Share Any Information.",
+    "Refused to share job details",
+    "Student Busy / Call Later"
+]
+
+PLACEMENT_WILL_JOIN_OPTIONS = [
+    "Offer Letter Received - Awaiting DOJ",
+    "Selected - Date of Joining Pending",
+    "Under Background Verification",
+    "Personal / Exam Delay Before Joining"
+]
+
+PLACEMENT_WORKING_REMARKS_OPTIONS = [
+    "N/A - Currently Working",
+    "Working Satisfactorily",
+    "Looking for Better Opportunity"
+]
+
+PLACEMENT_MONTHS_OPTIONS = [
+    "1 Month", "2 Months", "3 Months", "4 Months", "5 Months", "6 Months",
+    "7 Months", "8 Months", "9 Months", "10 Months", "11 Months", "12 Months",
+    "Less than 1 Months", "More than 12 months"
+]
+
+PLACEMENT_SATISFIED_OPTIONS = [
+    "Yes",
+    "No",
+    "Don't want to share",
+    "Don't know"
+]
+
+PLACEMENT_NPS_OPTIONS = [
+    "10", "9", "8", "7", "6", "5", "4", "3", "2", "1", "0", "Don't Want To Share"
+]
+
+PLACEMENT_TRI_STATE_OPTIONS = [
+    "YES",
+    "NO",
+    "Don't Share"
+]
+
+def normalize_tri_val(val, default="YES"):
+    v = (val or "").strip()
+    if any(k in v.upper() for k in ["DONT", "DON'T", "DIDNT", "DIDN'T", "REFUSE", "SHARE"]):
+        return "Don't Share"
+    if v.upper() == "NO":
+        return "NO"
+    if v.upper() == "YES":
+        return "YES"
+    return default
+
+def get_tri_option_index(val, default="YES"):
+    norm = normalize_tri_val(val, default)
+    if norm == "Don't Share":
+        return 2
+    if norm == "NO":
+        return 1
+    return 0
+
+# ==============================================================================
+# 🛠️ HELPER FUNCTIONS
+# ==============================================================================
+def clean_phone(phone_val) -> str:
+    if not phone_val:
+        return ""
+    digits = re.sub(r"\D", "", str(phone_val).strip())
+    return digits[-10:] if len(digits) >= 10 else digits
+
+def parse_date_safe(d_val):
+    if not d_val:
+        return None
+    if isinstance(d_val, (date, datetime)):
+        return d_val if isinstance(d_val, date) else d_val.date()
+    d_str = str(d_val).strip()
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(d_str[:10], fmt).date()
+        except Exception:
+            pass
+    return None
+
+def get_placement_highest_verified_index(student_list):
+    """
+    Returns the index of the highest student row in student_list that has already been verified
+    (contactable is 'Yes' or 'No'). Returns -1 if none have been verified yet.
+    """
+    if not student_list:
+        return -1
+    highest = -1
+    for idx, s in enumerate(student_list):
+        cont = str(s.get("contactable", "")).strip().lower()
+        if cont in ["yes", "no"]:
+            highest = idx
+    return highest
+
+# ==============================================================================
+# 💾 PERSISTENCE & QUEUE PROGRESS FOR PLACEMENT
+# ==============================================================================
+def load_all_placement_progress():
+    if os.path.exists(PROGRESS_PLACEMENT_FILE):
+        try:
+            with open(PROGRESS_PLACEMENT_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def get_placement_locked_batches(spoc_name):
+    """Returns set of locked Call IDs for the given Placement SPOC."""
+    if not spoc_name:
+        return set()
+    data = load_all_placement_progress()
+    spoc_key = spoc_name.strip().lower()
+    return set(data.get(spoc_key, {}).get("locked_batches", []))
+
+def set_placement_batch_lock(spoc_name, cid, is_locked=True):
+    """Persists batch lock state for a Placement SPOC in progress JSON."""
+    if not spoc_name or not cid:
+        return
+    data = load_all_placement_progress()
+    spoc_key = spoc_name.strip().lower()
+    spoc_data = data.get(spoc_key, {
+        "queue_index": 0,
+        "active_call_index": 0,
+        "phone": "",
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "locked_batches": []
+    })
+    locked = set(spoc_data.get("locked_batches", []))
+    cid_str = str(cid).strip()
+    if is_locked:
+        locked.add(cid_str)
+    else:
+        locked.discard(cid_str)
+    spoc_data["locked_batches"] = sorted(list(locked))
+    spoc_data["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    data[spoc_key] = spoc_data
+    try:
+        with open(PROGRESS_PLACEMENT_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
+
+def is_placement_batch_locked(spoc_name, cid, spoc_all_students=None):
+    """
+    Checks if a Placement Call ID batch for a SPOC is locked.
+    Returns True if explicitly locked in progress JSON OR if all assigned calls are Done.
+    """
+    cid_str = str(cid).strip()
+    locked_set = get_placement_locked_batches(spoc_name)
+    if cid_str in locked_set:
+        return True
+    if spoc_all_students:
+        cid_students = [s for s in spoc_all_students if str(s.get("call_id", "")).strip() == cid_str]
+        if cid_students and all(s.get("call_status") == "Done" for s in cid_students):
+            return True
+    return False
+
+def save_placement_progress(spoc_name, queue_index, phone="", active_call_index=None, locked_batches=None):
+    if not spoc_name:
+        return
+    try:
+        data = load_all_placement_progress()
+        spoc_key = spoc_name.strip().lower()
+        prev = data.get(spoc_key, {})
+        prev_active = prev.get("active_call_index", prev.get("queue_index", queue_index))
+        if active_call_index is None:
+            active_call_index = max(int(queue_index), int(prev_active))
+        else:
+            active_call_index = int(active_call_index)
+
+        existing_locked = list(prev.get("locked_batches", []))
+        if locked_batches is not None:
+            final_locked = sorted(list(set(locked_batches)))
+        else:
+            final_locked = existing_locked
+
+        data[spoc_key] = {
+            "queue_index": int(queue_index),
+            "active_call_index": active_call_index,
+            "phone": str(phone).strip(),
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "locked_batches": final_locked
+        }
+        with open(PROGRESS_PLACEMENT_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
+
+def get_saved_placement_index(spoc_name, student_list):
+    """
+    Smart auto-resume: If a SPOC previously called 2 students and 75 fresh calls are pending,
+    she automatically resumes at Target #3 (the first uncalled fresh student)!
+    """
+    if not spoc_name or not student_list:
+        return 0, 0
+    data = load_all_placement_progress()
+    saved = data.get(spoc_name.strip().lower(), {})
+    saved_active = saved.get("active_call_index", saved.get("queue_index", 0))
+    if not isinstance(saved_active, int) or saved_active < 0 or saved_active >= len(student_list):
+        saved_active = 0
+
+    highest_verified = get_placement_highest_verified_index(student_list)
+    if highest_verified >= 0 and (highest_verified + 1) < len(student_list):
+        effective_active = max(saved_active, highest_verified + 1)
+    else:
+        effective_active = saved_active
+
+    saved_phone = clean_phone(saved.get("phone", ""))
+    if saved_phone:
+        for idx, item in enumerate(student_list):
+            if clean_phone(item.get("contact_number", "")) == saved_phone:
+                return idx, max(idx, effective_active)
+
+    saved_idx = saved.get("queue_index", 0)
+    # If saved_idx was pointing to an already verified student, automatically advance to next fresh student
+    if highest_verified >= 0 and (highest_verified + 1) < len(student_list):
+        if saved_idx <= highest_verified:
+            target_idx = highest_verified + 1
+        else:
+            target_idx = saved_idx
+    elif isinstance(saved_idx, int) and 0 <= saved_idx < len(student_list):
+        target_idx = saved_idx
+    else:
+        target_idx = min(len(student_list) - 1, effective_active)
+
+    return target_idx, max(target_idx, effective_active)
+
+# ==============================================================================
+# 📊 IN-MEMORY CACHE & BACKGROUND SYNC ENGINE
+# ==============================================================================
+def update_in_memory_placement_row(row_num, payload, call_status="Done", call_id=None, concat=None):
+    """Updates the session master rows immediately in memory (sub-millisecond)."""
+    if "placement_master_rows" in st.session_state and st.session_state.placement_master_rows:
+        m_rows = st.session_state.placement_master_rows
+        if 0 < row_num <= len(m_rows):
+            idx = row_num - 1
+            curr = list(m_rows[idx])
+            if len(curr) < 36:
+                curr.extend([""] * (36 - len(curr)))
+            if payload and len(payload) > 0:
+                for i, val in enumerate(payload):
+                    if 16 + i < len(curr):
+                        curr[16 + i] = str(val)
+            if call_status is not None:
+                curr[33] = str(call_status)
+            if call_id is not None:
+                curr[34] = str(call_id)
+            spoc = str(curr[0]).strip() if len(curr) > 0 else ""
+            if concat is not None:
+                curr[35] = str(concat)
+            elif call_id is not None:
+                curr[35] = curr[35] if len(curr) > 35 and curr[35] else f"{spoc}{call_id}"
+            m_rows[idx] = curr
+            st.session_state.placement_master_rows = m_rows
+
+def batch_update_in_memory_placement_rows(updates_map):
+    """
+    updates_map: dict of {row_num: (payload, call_status, call_id, [concat])}
+    Updates in-memory session rows in a single microsecond pass.
+    """
+    if not updates_map:
+        return
+    if "placement_master_rows" in st.session_state and st.session_state.placement_master_rows:
+        m_rows = st.session_state.placement_master_rows
+        for row_num, update_tuple in updates_map.items():
+            payload = update_tuple[0] if len(update_tuple) > 0 else []
+            call_status = update_tuple[1] if len(update_tuple) > 1 else None
+            call_id = update_tuple[2] if len(update_tuple) > 2 else None
+            concat = update_tuple[3] if len(update_tuple) > 3 else None
+            if 0 < row_num <= len(m_rows):
+                idx = row_num - 1
+                curr = list(m_rows[idx])
+                if len(curr) < 36:
+                    curr.extend([""] * (36 - len(curr)))
+                if payload and len(payload) > 0:
+                    for i, val in enumerate(payload):
+                        if 16 + i < len(curr):
+                            curr[16 + i] = str(val)
+                if call_status is not None:
+                    curr[33] = str(call_status)
+                if call_id is not None:
+                    curr[34] = str(call_id)
+                spoc = str(curr[0]).strip() if len(curr) > 0 else ""
+                if concat is not None:
+                    curr[35] = str(concat)
+                elif call_id is not None:
+                    curr[35] = curr[35] if len(curr) > 35 and curr[35] else f"{spoc}{call_id}"
+                m_rows[idx] = curr
+        st.session_state.placement_master_rows = m_rows
+
+def _bg_placement_sync_worker(ws, row_num, payload, call_status="Done", call_id="1153", concat=None):
+    """
+    Background worker: Syncs row to Google Sheets without blocking UI.
+    """
+    try:
+        if ws:
+            if payload and len(payload) > 0:
+                ws.update(values=[payload], range_name=f"Q{row_num}:AG{row_num}")
+            try:
+                c_concat = str(concat) if concat is not None else f"{call_id}"
+                if ws.col_count >= 36:
+                    ws.update(values=[[call_status, call_id, c_concat]], range_name=f"AH{row_num}:AJ{row_num}")
+                elif ws.col_count >= 35:
+                    ws.update(values=[[call_status, call_id]], range_name=f"AH{row_num}:AI{row_num}")
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[Placement BG Sync Error] row {row_num}: {e}")
+
+def _bg_batch_sheet_worker(ws, batch_updates):
+    try:
+        if ws and batch_updates:
+            chunk_size = 100
+            for i in range(0, len(batch_updates), chunk_size):
+                chunk = batch_updates[i:i + chunk_size]
+                ws.batch_update(chunk)
+            print(f"[Placement BG Sync] Updated {len(batch_updates)} rows in Google Sheets.")
+    except Exception as e:
+        print(f"[Placement BG Batch Sync Error]: {e}")
+
+def dispatch_placement_sync(ws, row_num, payload, call_status="Done", call_id="1153", concat=None):
+    _PLACEMENT_BG_EXECUTOR.submit(_bg_placement_sync_worker, ws, row_num, list(payload), call_status, call_id, concat)
+
+def fetch_placement_master_data(_placement_ws):
+    """Fetches all rows from Placement_Verification worksheet with in-memory session caching"""
+    if "placement_master_rows" in st.session_state and st.session_state.placement_master_rows:
+        return st.session_state.placement_master_rows
+    try:
+        if _placement_ws:
+            rows = _placement_ws.get_all_values()
+            if rows and len(rows) > 1:
+                st.session_state.placement_master_rows = [list(r) for r in rows]
+                return st.session_state.placement_master_rows
+        return []
+    except Exception:
+        return []
+
+def parse_all_placement_students(all_rows):
+    """Parses all student rows from the Google Sheet regardless of SPOC"""
+    if len(all_rows) <= 1:
+        return []
+    students = []
+    q_idx = 0
+    for r_idx, r in enumerate(all_rows[1:], start=2):
+        if len(r) > 0 and str(r[0]).strip():
+            assigned_spoc = str(r[0]).strip()
+            padded = list(r) + [""] * max(0, 36 - len(r))
+            raw_cont = padded[16].strip()
+            raw_vdate = padded[28].strip()
+            call_status = padded[33].strip() if len(padded) > 33 and padded[33].strip() else ("Done" if (raw_cont.lower() in ["yes", "no"] or raw_vdate) else "Progress")
+            call_id = padded[34].strip() if len(padded) > 34 and padded[34].strip() else ("1153" if r_idx <= 1154 else "1000")
+            concat = padded[35].strip() if len(padded) > 35 and padded[35].strip() else f"{assigned_spoc}{call_id}"
+            students.append({
+                "row_num": r_idx,
+                "queue_index": q_idx,
+                "called_by": assigned_spoc,
+                "student_name": padded[1].strip(),
+                "cmis_id": padded[2].strip(),
+                "donor_name": padded[3].strip(),
+                "contact_number": padded[4].strip(),
+                "alt_contact_number": padded[5].strip(),
+                "gender": padded[6].strip(),
+                "centre_code": padded[7].strip(),
+                "centre_name": padded[8].strip(),
+                "state": padded[9].strip(),
+                "course": padded[10].strip(),
+                "doj": padded[11].strip(),
+                "company_name": padded[12].strip(),
+                "designation": padded[13].strip(),
+                "salary": padded[14].strip(),
+                "job_location": padded[15].strip(),
+                # Verified columns (Q to AG)
+                "contactable": padded[16].strip(),
+                "assessment_given": padded[17].strip(),
+                "got_certificate": padded[18].strip(),
+                "got_job_from_anudip": padded[19].strip(),
+                "retention_status": padded[20].strip(),
+                "how_many_months": padded[21].strip(),
+                "current_company": padded[22].strip(),
+                "current_salary": padded[23].strip(),
+                "current_designation": padded[24].strip(),
+                "current_doj": padded[25].strip(),
+                "need_further_job": padded[26].strip(),
+                "nps": padded[27].strip(),
+                "verification_date": padded[28].strip(),
+                "left_not_working_remarks": padded[29].strip(),
+                "not_joined_remarks": padded[30].strip(),
+                "satisfied_with_conversation": padded[31].strip(),
+                "remarks_2": padded[32].strip() if len(padded) > 32 else "",
+                "call_status": call_status,
+                "call_id": call_id,
+                "concat": concat
+            })
+            q_idx += 1
+    return students
+
+def get_placement_students_for_spoc(all_rows, spoc_name):
+    """
+    Parses and returns structured student records for the specified SPOC.
+    If spoc_name is an admin, returns all records with ability to filter.
+    """
+    if len(all_rows) <= 1:
+        return []
+
+    spoc_clean = (spoc_name or "").strip().lower()
+    ADMIN_USERS = {"nibedan", "pritam", "kalpana", "koushik"}
+    is_admin = spoc_clean in ADMIN_USERS
+
+    all_students = parse_all_placement_students(all_rows)
+    if is_admin:
+        return all_students
+    
+    # Filter to current SPOC
+    spoc_students = [s for s in all_students if s["called_by"].strip().lower() == spoc_clean]
+    for i, s in enumerate(spoc_students):
+        s["queue_index"] = i
+    return spoc_students
+
+# ==============================================================================
+# 🚀 REAL-TIME STATS & FRESH / NO QUEUES
+# ==============================================================================
+def compute_placement_stats(students, live_history=None):
+    if live_history is None:
+        live_history = []
+    # Merge live buffer statuses and remarks
+    live_map = {}
+    live_rem_map = {}
+    for r_num, row_data in live_history:
+        if len(row_data) > 0:
+            live_map[r_num] = row_data[0].strip().lower()
+            if len(row_data) > 13:
+                live_rem_map[r_num] = row_data[13].strip()
+
+    total_assigned = len(students)
+    yes_cnt, no_cnt = 0, 0
+    fresh_list = []
+    no_list = []
+
+    for s in students:
+        r_num = s["row_num"]
+        c_status = s.get("call_status", "").strip().lower()
+        cont = live_map.get(r_num, s.get("contactable", "").strip().lower())
+        if cont == "yes":
+            yes_cnt += 1
+        elif cont == "no":
+            no_cnt += 1
+            if c_status != "done":
+                s_item = dict(s)
+                if r_num in live_rem_map and live_rem_map[r_num]:
+                    s_item["left_not_working_remarks"] = live_rem_map[r_num]
+                no_list.append(s_item)
+        else:
+            if c_status != "done":
+                fresh_list.append(s)
+
+    total_called = yes_cnt + no_cnt
+    fresh_pending = len(fresh_list)
+    contactable_pct = (yes_cnt / total_called * 100.0) if total_called > 0 else 0.0
+
+    just_nums_text = "\n".join([clean_phone(s["contact_number"]) for s in fresh_list if clean_phone(s["contact_number"])])
+    no_nums_text = "\n".join([clean_phone(s["contact_number"]) for s in no_list if clean_phone(s["contact_number"])])
+
+    return {
+        "total_assigned": total_assigned,
+        "total_called": total_called,
+        "yes_count": yes_cnt,
+        "no_count": no_cnt,
+        "fresh_pending": fresh_pending,
+        "contactable_pct": contactable_pct,
+        "fresh_list": fresh_list,
+        "no_list": no_list,
+        "just_numbers_text": just_nums_text,
+        "no_numbers_text": no_nums_text
+    }
+
+# ==============================================================================
+# 🟢 FRESH CALL LIST UI COMPONENT
+# ==============================================================================
+def render_placement_fresh_call_list(fresh_stats, current_spoc, all_placement_students=None, active_queue_students=None, is_admin=False, selected_perf_view=None, key_prefix="pop"):
+    f_spoc = (current_spoc or "All Team").title()
+    v_pending = fresh_stats.get("fresh_pending", 0)
+    v_assigned = fresh_stats.get("total_assigned", 0)
+    v_called = fresh_stats.get("total_called", 0)
+    v_yes = fresh_stats.get("yes_count", 0)
+    v_no = fresh_stats.get("no_count", 0)
+    just_nums_text = fresh_stats.get("just_numbers_text", "")
+    fresh_items = fresh_stats.get("fresh_list", [])
+
+    st.markdown(f"""
+        <div style="background: linear-gradient(135deg, #f0fdf4 0%, #ffffff 100%); border: 1.5px solid #86efac; border-left: 5px solid #16a34a; border-radius: 8px; padding: 10px 14px; margin-bottom: 12px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                <span style="font-weight: 800; color: #166534; font-size: 1.05rem;">🟢 Fresh Calling Queue: {f_spoc}</span>
+                <span style="background: #dcfce7; color: #15803d; border: 1px solid #bbf7d0; padding: 2px 8px; border-radius: 12px; font-weight: 700; font-size: 0.82rem;">{v_pending} Pending</span>
+            </div>
+            <div style="margin-top: 6px; font-size: 0.82rem; color: #374151;">
+                📊 <b>Formula:</b> Total Assigned ({v_assigned}) − Called ({v_called}) [Yes: {v_yes} + No: {v_no}] = <b style="color: #15803d;">{v_pending} Fresh Pending</b>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    if v_pending == 0:
+        st.success(f"🎉 Outstanding work! All {v_assigned} assigned placement calls for {f_spoc} have been completed.")
+        return
+
+    tab_nums, tab_queue = st.tabs(["📱 Just Numbers (Raw List)", "📞 Interactive Call List"])
+
+    with tab_nums:
+        st.caption(f"📋 Pending uncalled phone numbers ({v_pending} remaining). Copy or download below:")
+        st.text_area(
+            "Just Numbers",
+            value=just_nums_text,
+            height=160,
+            key=f"plc_ta_just_nums_{f_spoc}_{key_prefix}",
+            help="Click inside and press Ctrl+A / Ctrl+C to copy all pending numbers directly into your dialer."
+        )
+
+        c_dl1, c_dl2 = st.columns(2)
+        with c_dl1:
+            st.download_button(
+                label=f"📥 Download Just Numbers ({v_pending})",
+                data=just_nums_text,
+                file_name=f"Placement_Fresh_Numbers_{f_spoc}_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
+                mime="text/plain",
+                use_container_width=True,
+                key=f"plc_dl_txt_{f_spoc}_{key_prefix}"
+            )
+        with c_dl2:
+            csv_lines = ["Target_Num,Phone_Number,Student_Name,Company,Designation,Salary"]
+            for item in fresh_items:
+                csv_lines.append(f"Target #{item.get('queue_index', 0)+1},{item['contact_number']},{item['student_name']},{item['company_name']},{item['designation']},{item['salary']}")
+            st.download_button(
+                label="📊 Download CSV Details",
+                data="\n".join(csv_lines),
+                file_name=f"Placement_Fresh_List_{f_spoc}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key=f"plc_dl_csv_{f_spoc}_{key_prefix}"
+            )
+
+    with tab_queue:
+        q_search = st.text_input(
+            "Search phone or student name",
+            placeholder="Type 10-digit number or name...",
+            key=f"plc_q_search_{f_spoc}_{key_prefix}",
+            label_visibility="collapsed"
+        )
+        filtered = fresh_items
+        if q_search.strip():
+            clean_q = clean_phone(q_search.strip())
+            name_q = q_search.strip().lower()
+            filtered = [
+                x for x in fresh_items
+                if (clean_q and (clean_q in clean_phone(x["contact_number"]) or clean_q in clean_phone(x.get("alt_contact_number", ""))))
+                or (name_q in x["student_name"].lower())
+                or (f"#{x.get('queue_index', 0)+1}" == q_search.strip())
+                or (f"#{x.get('row_num', 0)}" == q_search.strip())
+            ]
+
+        st.caption(f"Showing **{min(len(filtered), 50)}** of **{len(filtered)}** pending calls:")
+        for f_idx, it in enumerate(filtered[:50]):
+            col_i1, col_i2 = st.columns([3, 1.2])
+            with col_i1:
+                st.markdown(f"**Target #{it.get('queue_index', 0)+1}**: `{it['contact_number']}` &nbsp;·&nbsp; *{it['student_name']}* ({it.get('company_name', '')})")
+            with col_i2:
+                if st.button("📞 Load", key=f"plc_btn_ld_{f_idx}_{it['row_num']}_{key_prefix}", use_container_width=True):
+                    # Switch off Not Contactable pinned mode when loading fresh call
+                    st.session_state.pin_placement_no_call_list = False
+                    # Locate student in active_queue_students by row_num
+                    target_idx = None
+                    if active_queue_students:
+                        for a_i, a_s in enumerate(active_queue_students):
+                            if a_s["row_num"] == it["row_num"]:
+                                target_idx = a_i
+                                break
+                    if target_idx is not None:
+                        st.session_state.placement_queue_index = target_idx
+                    else:
+                        stu_spoc = it.get("called_by", "").strip().title()
+                        if is_admin and stu_spoc:
+                            st.session_state.plc_perf_view = stu_spoc
+                            st.session_state.plc_perf_view_selector_box = stu_spoc
+                            spoc_queue = [s for s in (all_placement_students or []) if s["called_by"].strip().lower() == stu_spoc.lower()]
+                            for s_i, s_s in enumerate(spoc_queue):
+                                if s_s["row_num"] == it["row_num"]:
+                                    target_idx = s_i
+                                    break
+                        if target_idx is None:
+                            st.session_state.plc_perf_view = "🌟 All Team Combined (Portal Total)"
+                            st.session_state.plc_perf_view_selector_box = "🌟 All Team Combined (Portal Total)"
+                            if all_placement_students:
+                                for g_i, g_s in enumerate(all_placement_students):
+                                    if g_s["row_num"] == it["row_num"]:
+                                        target_idx = g_i
+                                        break
+                        st.session_state.placement_queue_index = target_idx if target_idx is not None else 0
+
+                    st.session_state.pop("placement_editing_row", None)
+                    st.session_state.pop("placement_active_recall", None)
+
+                    if st.session_state.placement_queue_index > st.session_state.get("placement_active_call_index", 0):
+                        st.session_state.placement_active_call_index = st.session_state.placement_queue_index
+                    save_placement_progress(
+                        current_spoc or it.get("called_by", ""),
+                        st.session_state.placement_queue_index,
+                        it["contact_number"],
+                        active_call_index=st.session_state.placement_active_call_index
+                    )
+                    st.toast(f"Loaded Target #{target_idx + 1 if target_idx is not None else 1} ({it['student_name']})!", icon="🎯")
+                    st.rerun()
+
+# ==============================================================================
+# 📞 NOT CONTACTABLE POPUP COMPONENT (INTERACTIVE RE-CALL ENGINE)
+# ==============================================================================
+def render_placement_not_contactable_list(fresh_stats, current_spoc, all_placement_students=None, active_queue_students=None, is_admin=False, selected_perf_view=None, key_prefix="pop"):
+    f_spoc = (current_spoc or "All Team").title()
+    no_items = fresh_stats.get("no_list", [])
+    no_count = len(no_items)
+    no_nums_text = fresh_stats.get("no_numbers_text", "\n".join([clean_phone(s["contact_number"]) for s in no_items if clean_phone(s.get("contact_number"))]))
+
+    st.markdown(f"""
+        <div style="background: linear-gradient(135deg, #fff7ed 0%, #ffffff 100%); border: 1.5px solid #fed7aa; border-left: 5px solid #ea580c; border-radius: 8px; padding: 10px 14px; margin-bottom: 12px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                <span style="font-weight: 800; color: #9a3412; font-size: 1.05rem;">📞 Not Contactable ("No" Calls): {f_spoc}</span>
+                <span style="background: #ffedd5; color: #c2410c; border: 1px solid #fed7aa; padding: 2px 8px; border-radius: 12px; font-weight: 700; font-size: 0.82rem;">{no_count} Calls</span>
+            </div>
+            <div style="margin-top: 6px; font-size: 0.82rem; color: #7c2d12;">
+                💡 <b>High Speed Dynamic Re-call:</b> Click <b>🔁 Re-Call</b> on any student to instantly load their profile and form. If reached, change to <b>'Yes'</b> to verify!
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    if not no_items:
+        st.info("👍 No 'Not Contactable' calls recorded yet.")
+        return
+
+    tab_nums, tab_queue = st.tabs(["📱 Just Numbers (Raw List)", "📞 Interactive Re-Call List"])
+
+    with tab_nums:
+        st.caption(f"📋 Unreached 'No' contact numbers ({no_count} calls). Copy or download below:")
+        st.text_area(
+            "Just Numbers",
+            value=no_nums_text,
+            height=160,
+            key=f"plc_ta_no_nums_{f_spoc}_{key_prefix}",
+            help="Click inside and press Ctrl+A / Ctrl+C to copy all 'No' numbers directly into your dialer."
+        )
+
+        c_dl1, c_dl2 = st.columns(2)
+        with c_dl1:
+            st.download_button(
+                label=f"📥 Download Just Numbers ({no_count})",
+                data=no_nums_text,
+                file_name=f"Placement_NotContactable_Numbers_{f_spoc}_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
+                mime="text/plain",
+                use_container_width=True,
+                key=f"plc_dl_no_txt_{f_spoc}_{key_prefix}"
+            )
+        with c_dl2:
+            csv_lines = ["Target_Num,Sheet_Row,Phone_Number,Student_Name,Company,Reason,SPOC"]
+            for item in no_items:
+                csv_lines.append(f"Target #{item.get('queue_index', 0)+1},{item['row_num']},{item['contact_number']},{item['student_name']},{item.get('company_name', '')},{item.get('left_not_working_remarks', '') or 'Not Contactable'},{item.get('called_by', '')}")
+            st.download_button(
+                label="📊 Download CSV Details",
+                data="\n".join(csv_lines),
+                file_name=f"Placement_NotContactable_List_{f_spoc}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key=f"plc_dl_no_csv_{f_spoc}_{key_prefix}"
+            )
+
+    with tab_queue:
+        q_search = st.text_input(
+            "Search phone, student name, or reason in unreached queue:",
+            placeholder="🔍 Type phone number, student name, or reason (e.g. Ringing, Ping, Switched off)...",
+            key=f"plc_nc_search_{f_spoc}_{key_prefix}",
+            label_visibility="collapsed"
+        )
+
+        filtered = no_items
+        if q_search.strip():
+            clean_q = clean_phone(q_search.strip())
+            text_q = q_search.strip().lower()
+            filtered = [
+                x for x in no_items
+                if (clean_q and (clean_q in clean_phone(x.get("contact_number", "")) or clean_q in clean_phone(x.get("alt_contact_number", ""))))
+                or (text_q in x.get("student_name", "").lower())
+                or (text_q in x.get("left_not_working_remarks", "").lower())
+                or (f"#{x.get('queue_index', 0)+1}" == q_search.strip())
+                or (f"#{x.get('row_num', 0)}" == q_search.strip())
+            ]
+
+        st.caption(f"Showing **{min(len(filtered), 50)}** of **{len(filtered)}** calls ready for Re-Call:")
+
+        for r_idx, it in enumerate(filtered[:50]):
+            c1, c2 = st.columns([3, 1.2])
+            r_num = it["row_num"]
+            reason_display = it.get("left_not_working_remarks", "").strip() or "Not Contactable"
+            with c1:
+                st.markdown(
+                    f"**Target #{it.get('queue_index', 0)+1}**: `{it.get('contact_number', '')}` &nbsp;·&nbsp; *{it.get('student_name', '')}*<br>"
+                    f"<small style='color: #c2410c; font-weight: 600;'>Reason: {reason_display}</small>",
+                    unsafe_allow_html=True
+                )
+            with c2:
+                if st.button("🔁 Re-Call", key=f"plc_recall_{r_idx}_{r_num}_{key_prefix}", use_container_width=True):
+                    # 1. Switch to Pinned Not Contactable Queue mode
+                    st.session_state.pin_placement_no_call_list = True
+                    st.session_state.pin_placement_fresh_call_list = False
+
+                    # 2. Locate student in no_items
+                    target_no_idx = None
+                    for no_i, no_s in enumerate(no_items):
+                        if no_s["row_num"] == r_num:
+                            target_no_idx = no_i
+                            break
+                    st.session_state.placement_no_queue_index = target_no_idx if target_no_idx is not None else 0
+
+                    # Also locate student in active_queue_students by row_num for fallback
+                    target_idx = None
+                    if active_queue_students:
+                        for a_i, a_s in enumerate(active_queue_students):
+                            if a_s["row_num"] == r_num:
+                                target_idx = a_i
+                                break
+
+                    # 3. If not found in active queue, switch view or find in all_placement_students
+                    if target_idx is not None:
+                        st.session_state.placement_queue_index = target_idx
+                    else:
+                        stu_spoc = it.get("called_by", "").strip().title()
+                        if is_admin and stu_spoc:
+                            st.session_state.plc_perf_view = stu_spoc
+                            st.session_state.plc_perf_view_selector_box = stu_spoc
+                            spoc_queue = [s for s in (all_placement_students or []) if s["called_by"].strip().lower() == stu_spoc.lower()]
+                            for s_i, s_s in enumerate(spoc_queue):
+                                if s_s["row_num"] == r_num:
+                                    target_idx = s_i
+                                    break
+                        if target_idx is None:
+                            st.session_state.plc_perf_view = "🌟 All Team Combined (Portal Total)"
+                            st.session_state.plc_perf_view_selector_box = "🌟 All Team Combined (Portal Total)"
+                            if all_placement_students:
+                                for g_i, g_s in enumerate(all_placement_students):
+                                    if g_s["row_num"] == r_num:
+                                        target_idx = g_i
+                                        break
+                        st.session_state.placement_queue_index = target_idx if target_idx is not None else 0
+
+                    # 4. Store PRESET values into session state for this row so form loads student data
+                    st.session_state[f"plc_preset_{r_num}"] = {
+                        "contactable": "No",
+                        "assessment_given": normalize_tri_val(it.get("assessment_given"), "YES"),
+                        "got_certificate": normalize_tri_val(it.get("got_certificate"), "YES"),
+                        "got_job_from_anudip": normalize_tri_val(it.get("got_job_from_anudip"), "YES"),
+                        "retention_status": it.get("retention_status") or "Working in same job",
+                        "months": it.get("how_many_months") or ("3 Months" if it.get("retention_status") in ["Working in same job", "Working in different job"] else ""),
+                        "company": it.get("current_company") or it.get("company_name", ""),
+                        "salary": it.get("current_salary") or it.get("salary", ""),
+                        "designation": it.get("current_designation") or it.get("designation", ""),
+                        "doj": parse_date_safe(it.get("current_doj")) or parse_date_safe(it.get("doj")) or date.today(),
+                        "need_further_job": normalize_tri_val(it.get("need_further_job"), "NO"),
+                        "nps": it.get("nps") or "10",
+                        "satisfied": it.get("satisfied_with_conversation") or "Yes",
+                        "verification_date": date.today(),
+                        "left_remarks": it.get("left_not_working_remarks", ""),
+                        "not_joined_remarks": it.get("not_joined_remarks", "N/A"),
+                        "nocont_reason": it.get("left_not_working_remarks", "") or "Did not respond to our call",
+                        "remarks_2": it.get("remarks_2", "")
+                    }
+
+                    # 5. Clear old widget states for this row to force fresh render from preset
+                    for k in list(st.session_state.keys()):
+                        if f"_{r_num}" in k and k.startswith("plc_"):
+                            st.session_state.pop(k, None)
+                        elif k.startswith("plc_preset_") and k != f"plc_preset_{r_num}":
+                            st.session_state.pop(k, None)
+
+                    # 6. Set editing & recall state flags
+                    st.session_state.placement_editing_row = r_num
+                    st.session_state.placement_active_recall = r_num
+
+                    spoc_to_save = current_spoc or it.get("called_by", "")
+                    save_placement_progress(
+                        spoc_to_save,
+                        st.session_state.placement_queue_index,
+                        it.get("contact_number", ""),
+                        active_call_index=st.session_state.get("placement_active_call_index", 0)
+                    )
+                    st.toast(f"Loaded Not Contactable Target #{target_no_idx + 1 if target_no_idx is not None else 1} ({it['student_name']}) for Re-Call! Change status to 'Yes' if reached.", icon="🔁")
+                    st.rerun()
+
+        if len(filtered) > 50:
+            st.caption(f"... and {len(filtered) - 50} more 'No' calls. Use the search box above to locate specific students.")
+
+# ==============================================================================
+# 📥 RESPECTIVE SPOC DATA EXPORT & SIDEBAR DOWNLOAD COMPONENT (PICTURE 2)
+# ==============================================================================
+def build_placement_csv(students_subset, live_history=None, headers=None):
+    """
+    Builds a complete UTF-8 with BOM CSV containing all 33 Placement columns.
+    Overlays real-time live session updates so newly verified calls appear immediately.
+    """
+    if live_history is None:
+        live_history = []
+
+    live_map = {}
+    for item in live_history:
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            live_map[item[0]] = item[1]
+
+    base_headers = [
+        "SPOC Name", "Student Name", "CMIS ID", "Donor Name", "Contact Number",
+        "Alt Contact Number", "Gender", "Centre Code", "Centre Name", "State",
+        "Course", "DOJ", "Company Name", "Designation", "Salary", "Job Location",
+        "Contactable", "Assessment Given", "Got Certificate", "Have You Got This Job From Anudip",
+        "Retention Status", "How Many Months Working", "Current Company Name", "Current Salary",
+        "Current Designation", "Current DOJ", "Need any further job", "Net Promoter Score",
+        "Verification Date", "Left / Not Working Remarks", "Not Joined Remarks",
+        "Satisfied With Conversation", "Remarks 2"
+    ]
+    export_headers = list(headers[:33]) if (headers and len(headers) >= 33) else list(base_headers)
+    if "Call_Status" not in export_headers:
+        export_headers.append("Call_Status")
+    if "Call_id" not in export_headers:
+        export_headers.append("Call_id")
+    if "Concat" not in export_headers:
+        export_headers.append("Concat")
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(export_headers)
+
+    for s in students_subset:
+        r_num = s.get("row_num")
+        lp = live_map.get(r_num)
+
+        contactable = lp[0] if lp and len(lp) > 0 else s.get("contactable", "")
+        assessment = lp[1] if lp and len(lp) > 1 else s.get("assessment_given", "")
+        certificate = lp[2] if lp and len(lp) > 2 else s.get("got_certificate", "")
+        got_job = lp[3] if lp and len(lp) > 3 else s.get("got_job_from_anudip", "")
+        retention = lp[4] if lp and len(lp) > 4 else s.get("retention_status", "")
+        months = lp[5] if lp and len(lp) > 5 else s.get("how_many_months", "")
+        curr_co = lp[6] if lp and len(lp) > 6 else s.get("current_company", "")
+        curr_sal = lp[7] if lp and len(lp) > 7 else s.get("current_salary", "")
+        curr_desig = lp[8] if lp and len(lp) > 8 else s.get("current_designation", "")
+        curr_doj = lp[9] if lp and len(lp) > 9 else s.get("current_doj", "")
+        need_job = lp[10] if lp and len(lp) > 10 else s.get("need_further_job", "")
+        nps = lp[11] if lp and len(lp) > 11 else s.get("nps", "")
+        vdate = lp[12] if lp and len(lp) > 12 else s.get("verification_date", "")
+        left_rem = lp[13] if lp and len(lp) > 13 else s.get("left_not_working_remarks", "")
+        not_joined_rem = lp[14] if lp and len(lp) > 14 else s.get("not_joined_remarks", "")
+        satisfied = lp[15] if lp and len(lp) > 15 else s.get("satisfied_with_conversation", "")
+        rem2 = lp[16] if lp and len(lp) > 16 else s.get("remarks_2", "")
+
+        is_done = (contactable.strip().lower() in ["yes", "no"]) or bool(vdate.strip())
+        row_status = "Done" if is_done else "Progress"
+        row_call_id = s.get("call_id") or ("1153" if (r_num and r_num <= 1154) else "1000")
+        row_concat = s.get("concat") or f"{s.get('called_by', '')}{row_call_id}"
+
+        row = [
+            s.get("called_by", ""),
+            s.get("student_name", ""),
+            s.get("cmis_id", ""),
+            s.get("donor_name", ""),
+            s.get("contact_number", ""),
+            s.get("alt_contact_number", ""),
+            s.get("gender", ""),
+            s.get("centre_code", ""),
+            s.get("centre_name", ""),
+            s.get("state", ""),
+            s.get("course", ""),
+            s.get("doj", ""),
+            s.get("company_name", ""),
+            s.get("designation", ""),
+            s.get("salary", ""),
+            s.get("job_location", ""),
+            contactable,
+            assessment,
+            certificate,
+            got_job,
+            retention,
+            months,
+            curr_co,
+            curr_sal,
+            curr_desig,
+            curr_doj,
+            need_job,
+            nps,
+            vdate,
+            left_rem,
+            not_joined_rem,
+            satisfied,
+            rem2,
+            row_status,
+            row_call_id,
+            row_concat
+        ]
+        writer.writerow(row)
+
+    return "\ufeff" + output.getvalue()
+
+def render_placement_sidebar_download(all_placement_students, current_spoc, is_admin=False, live_history=None, all_rows=None, placement_ws=None):
+    """
+    Renders the dedicated SPOC Data Download section in the sidebar directly beneath Logout,
+    exactly as requested in Picture 2. Allows SPOCs to download Yes, No, and Total data.
+    """
+    if live_history is None:
+        live_history = []
+
+    live_map = {}
+    for item in live_history:
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            live_map[item[0]] = item[1]
+
+    all_spocs = sorted(list({s["called_by"].strip().title() for s in all_placement_students if s.get("called_by")}))
+
+    target_spoc = current_spoc.strip()
+    if is_admin:
+        admin_spoc_options = [current_spoc.title(), "🌟 All Team Combined"] + [sp for sp in all_spocs if sp.lower() != current_spoc.strip().lower()]
+        target_choice = st.sidebar.selectbox(
+            "📥 Target SPOC Download Scope",
+            admin_spoc_options,
+            index=0,
+            key="sb_plc_dl_target_spoc"
+        )
+        if target_choice == "🌟 All Team Combined":
+            target_spoc = "ALL"
+            display_spoc_label = "All Team Combined"
+        else:
+            target_spoc = target_choice
+            display_spoc_label = target_choice
+    else:
+        display_spoc_label = current_spoc.title()
+
+    if target_spoc == "ALL":
+        spoc_records = all_placement_students
+    else:
+        spoc_records = [s for s in all_placement_students if s["called_by"].strip().lower() == target_spoc.strip().lower()]
+
+    safe_name = re.sub(r'[^\w\-_\.]', '_', display_spoc_label)
+    now_str = datetime.now().strftime('%Y%m%d_%H%M')
+
+    # Dynamic Call ID Filter (Discovers all unique Call IDs from spoc_records: 1153, 1000)
+    found_cids = sorted(list({str(s.get("call_id", "")).strip() for s in spoc_records if str(s.get("call_id", "")).strip()}))
+    for def_cid in ["1000", "1153"]:
+        if def_cid not in found_cids and any(str(s.get("call_id", "")).strip() == def_cid for s in all_placement_students):
+            found_cids.append(def_cid)
+    found_cids = sorted(found_cids)
+    if not found_cids:
+        found_cids = ["1000", "1153"]
+    call_id_opts = ["All Call IDs"] + found_cids
+    sel_call_id = st.sidebar.selectbox("🏷️ Filter by Call ID:", call_id_opts, index=0, key=f"sb_plc_cid_{safe_name}")
+
+    filtered_spoc_records = spoc_records
+    if sel_call_id != "All Call IDs":
+        filtered_spoc_records = [s for s in spoc_records if str(s.get("call_id", "")).strip() == sel_call_id]
+
+    # Calculate status groups
+    done_students = []
+    progress_students = []
+    yes_students = []
+    no_students = []
+
+    for s in filtered_spoc_records:
+        r_num = s["row_num"]
+        lp = live_map.get(r_num)
+        cont = lp[0].strip().lower() if (lp and len(lp) > 0) else s.get("contactable", "").strip().lower()
+        vdate = lp[12].strip() if (lp and len(lp) > 12) else s.get("verification_date", "").strip()
+        is_done = (cont in ["yes", "no"]) or bool(vdate)
+
+        if is_done:
+            done_students.append(s)
+            if cont == "yes":
+                yes_students.append(s)
+            else:
+                no_students.append(s)
+        else:
+            progress_students.append(s)
+
+    total_students = filtered_spoc_records
+    done_cnt = len(done_students)
+    prog_cnt = len(progress_students)
+    yes_cnt = len(yes_students)
+    no_cnt = len(no_students)
+    total_cnt = len(total_students)
+
+    sheet_headers = None
+    if all_rows and len(all_rows) > 0 and len(all_rows[0]) >= 33:
+        sheet_headers = [str(h).strip() for h in all_rows[0][:33]]
+
+    # Styled container matching the green outline
+    st.sidebar.markdown(f"""
+        <div style="background: #ffffff; border: 2.2px solid #22c55e; border-radius: 10px; padding: 12px 14px; margin-top: 10px; margin-bottom: 12px; box-shadow: 0 2px 10px rgba(34, 197, 94, 0.15);">
+            <div style="font-weight: 800; color: #15803d; font-size: 0.96rem; text-align: center; text-transform: uppercase; letter-spacing: 0.5px;">
+                📥 Data Download ({display_spoc_label})
+            </div>
+            <div style="display: flex; justify-content: space-around; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; padding: 6px 4px; font-size: 0.78rem; font-weight: 700; margin-top: 8px;">
+                <span style="color: #15803d;">✅ Done: {done_cnt}</span>
+                <span style="color: #ea580c;">⏳ Progress: {prog_cnt}</span>
+                <span style="color: #1e40af;">📊 Total: {total_cnt}</span>
+            </div>
+            <div style="display: flex; justify-content: space-around; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 4px 4px; font-size: 0.76rem; font-weight: 600; margin-top: 4px;">
+                <span style="color: #16a34a;">🟢 Yes: {yes_cnt}</span>
+                <span style="color: #dc2626;">🔴 No: {no_cnt}</span>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # Quick action for SPOC to mark calls as Done for the selected Call ID scope
+    if prog_cnt > 0 and len(filtered_spoc_records) > 0:
+        btn_label = f"🏁 Mark '{sel_call_id}' as DONE & Lock ({prog_cnt})" if sel_call_id != "All Call IDs" else f"🏁 Mark ALL as DONE & Lock ({prog_cnt})"
+        if st.sidebar.button(btn_label, type="primary", key=f"sb_plc_all_done_{safe_name}_{sel_call_id}", use_container_width=True, help="Update Call_Status to Done & Lock for your calls in this batch"):
+            updates_map = {}
+            batch_updates = []
+            for s in filtered_spoc_records:
+                s["call_status"] = "Done"
+                p_cid = s.get("call_id") or ("1153" if s["row_num"] <= 1154 else "1000")
+                concat = s.get("concat") or f"{s.get('called_by', '')}{p_cid}"
+                s["concat"] = concat
+                updates_map[s["row_num"]] = ([], "Done", p_cid, concat)
+                batch_updates.append({
+                    'range': f'AH{s["row_num"]}:AJ{s["row_num"]}',
+                    'values': [['Done', p_cid, concat]]
+                })
+            # 1. Instant sub-millisecond in-memory update
+            batch_update_in_memory_placement_rows(updates_map)
+            # 2. Persist lock for this SPOC
+            target_spoc_lock = current_spoc if target_spoc == "ALL" else target_spoc
+            if sel_call_id != "All Call IDs":
+                set_placement_batch_lock(target_spoc_lock, sel_call_id, True)
+            else:
+                for c in found_cids:
+                    set_placement_batch_lock(target_spoc_lock, c, True)
+            # 3. Async background sync to Google Sheet (Zero UI wait)
+            if placement_ws and batch_updates:
+                _PLACEMENT_BG_EXECUTOR.submit(placement_ws.batch_update, batch_updates)
+            st.toast(f"🎉 Calls for {safe_name} ({sel_call_id}) marked as 'Done' & Locked in Google Sheet!", icon="✅")
+            time.sleep(0.2)
+            st.rerun()
+
+    # 1. Download 'Call Done' Data (Completed Calls)
+    file_cid_suffix = f"_{sel_call_id}" if sel_call_id != "All Call IDs" else ""
+    done_csv = build_placement_csv(done_students, live_history, headers=sheet_headers)
+    st.sidebar.download_button(
+        label=f"✅ Download 'Call Done' Data ({done_cnt})",
+        data=done_csv,
+        file_name=f"Placement_CallDone_Data_{safe_name}{file_cid_suffix}_{now_str}.csv",
+        mime="text/csv",
+        use_container_width=True,
+        key=f"sb_dl_plc_done_{safe_name}_{sel_call_id}"
+    )
+
+    # 2. Download 'In Progress' Data (For reassigning if SPOC left)
+    prog_csv = build_placement_csv(progress_students, live_history, headers=sheet_headers)
+    st.sidebar.download_button(
+        label=f"⏳ Download 'In Progress' Data ({prog_cnt})",
+        data=prog_csv,
+        file_name=f"Placement_InProgress_Data_{safe_name}{file_cid_suffix}_{now_str}.csv",
+        mime="text/csv",
+        use_container_width=True,
+        key=f"sb_dl_plc_prog_{safe_name}_{sel_call_id}"
+    )
+
+    # 3. Yes Data Download Button
+    yes_csv = build_placement_csv(yes_students, live_history, headers=sheet_headers)
+    st.sidebar.download_button(
+        label=f"🟢 Download 'Yes' Data ({yes_cnt})",
+        data=yes_csv,
+        file_name=f"Placement_Yes_Data_{safe_name}{file_cid_suffix}_{now_str}.csv",
+        mime="text/csv",
+        use_container_width=True,
+        key=f"sb_dl_plc_yes_{safe_name}_{sel_call_id}"
+    )
+
+    # 4. No Data Download Button
+    no_csv = build_placement_csv(no_students, live_history, headers=sheet_headers)
+    st.sidebar.download_button(
+        label=f"🔴 Download 'No' Data ({no_cnt})",
+        data=no_csv,
+        file_name=f"Placement_No_Data_{safe_name}{file_cid_suffix}_{now_str}.csv",
+        mime="text/csv",
+        use_container_width=True,
+        key=f"sb_dl_plc_no_{safe_name}_{sel_call_id}"
+    )
+
+    # 5. Total Data Download Button
+    total_csv = build_placement_csv(total_students, live_history, headers=sheet_headers)
+    st.sidebar.download_button(
+        label=f"📊 Download 'Total' Data ({total_cnt})",
+        data=total_csv,
+        file_name=f"Placement_Total_Data_{safe_name}_{now_str}.csv",
+        mime="text/csv",
+        use_container_width=True,
+        key=f"sb_dl_plc_total_{safe_name}"
+    )
+
+# ==============================================================================
+# 🤖 ZERO-API LOCAL AI PARSING & COPILOT SUITE (100% OFFLINE, FREE, NO API KEY)
+# ==============================================================================
+def ai_parse_call_notes(raw_notes: str, student_info: dict) -> dict:
+    """
+    Intelligent Local NLP extractor (0ms latency, zero external API key needed).
+    Parses unstructured caller notes/transcripts and maps them to structured verification fields.
+    """
+    if not raw_notes or not raw_notes.strip():
+        return {}
+
+    text = raw_notes.lower()
+    extracted = {}
+
+    # 1. Contactable check
+    if any(k in text for k in ["not contactable", "didn't answer", "did not answer", "no response", "ringing", "ring", "ping", "switched off", "wrong number", "network issue", "busy", "incoming"]):
+        extracted["contactable"] = "No"
+        extracted["retention_status"] = "Unable_to_track"
+        if "switched off" in text:
+            extracted["nocont_reason"] = "Switched off"
+        elif "wrong number" in text:
+            extracted["nocont_reason"] = "Wrong Number"
+        elif "network" in text:
+            extracted["nocont_reason"] = "Network issue"
+        elif any(k in text for k in ["incoming", "not available"]):
+            extracted["nocont_reason"] = "Incoming Call Is Not Available"
+        elif any(k in text for k in ["ping", "ring", "ringing", "rnr"]):
+            extracted["nocont_reason"] = "Ringing / Ring Call (Ping Call)"
+        elif "not a student" in text or "not anudip" in text:
+            extracted["nocont_reason"] = "Not a student of Anudip"
+        elif "language" in text:
+            extracted["nocont_reason"] = "Language issue"
+        elif "busy" in text or "disconnected" in text:
+            extracted["nocont_reason"] = "Call Disconnected / Busy"
+        else:
+            extracted["nocont_reason"] = "Did not respond to our call"
+        return extracted
+
+    # If reached here, student was contactable
+    extracted["contactable"] = "Yes"
+
+    # 2. Assessment
+    if any(k in text for k in ["assessment dont share", "assessment don't share", "assessment didn't share", "refused assessment"]):
+        extracted["assessment_given"] = "Don't Share"
+    elif "assessment no" in text or "not given assessment" in text or "assessment fail" in text:
+        extracted["assessment_given"] = "NO"
+    else:
+        extracted["assessment_given"] = "YES"
+
+    # 3. Certificate
+    if any(k in text for k in ["cert dont share", "certificate dont share", "certificate don't share", "refused certificate"]):
+        extracted["got_certificate"] = "Don't Share"
+    elif "no certificate" in text or "didn't get certificate" in text or "certificate not received" in text:
+        extracted["got_certificate"] = "NO"
+    else:
+        extracted["got_certificate"] = "YES"
+
+    # 4. Got Job from Anudip
+    if any(k in text for k in ["job source dont share", "job from anudip dont share", "job from anudip don't share"]):
+        extracted["got_job_from_anudip"] = "Don't Share"
+    elif "self placed" in text or "got job outside" in text or "job not from anudip" in text:
+        extracted["got_job_from_anudip"] = "NO"
+    else:
+        extracted["got_job_from_anudip"] = "YES"
+
+    # 5. Retention Status
+    if any(k in text for k in ["left job", "left the job", "resigned", "quit", "discontinued", "left"]):
+        extracted["retention_status"] = "Left_The_Job"
+        if "higher studies" in text or "study" in text or "college" in text or "mca" in text or "btech" in text:
+            extracted["left_remarks"] = "Pursuing Higher Studies."
+        elif "distance" in text or "far" in text or "travel" in text:
+            extracted["left_remarks"] = "Distance Issue"
+        elif "salary" in text or "low pay" in text:
+            extracted["left_remarks"] = "Salary Issue"
+        elif "medical" in text or "health" in text or "sick" in text:
+            extracted["left_remarks"] = "Medical & Health Issue"
+        elif "family" in text or "marriage" in text or "parent" in text:
+            extracted["left_remarks"] = "Family Issue"
+        elif "night shift" in text:
+            extracted["left_remarks"] = "Night Shift"
+        elif "internship completed" in text or "project completed" in text:
+            extracted["left_remarks"] = "Internship/Project Completed"
+        else:
+            extracted["left_remarks"] = "Casually Left The Job."
+
+    elif any(k in text for k in ["not working", "unemployed", "jobless", "didn't join", "not joined"]):
+        extracted["retention_status"] = "Not_working_at_all"
+        if "personal" in text or "family" in text or "distance" in text:
+            extracted["left_remarks"] = "Did_not_joined_job_due_to_personal_issue"
+            extracted["not_joined_remarks"] = "Distance Issue" if "distance" in text else "Medical Issue"
+        elif "profile" in text or "role" in text:
+            extracted["left_remarks"] = "Did_not_joined_job_due_to_profile_issue"
+            extracted["not_joined_remarks"] = "Issue Regarding Job Role"
+        elif "interview" in text:
+            extracted["left_remarks"] = "Did Not Attend Any Interview"
+        elif "selected" in text:
+            extracted["left_remarks"] = "Did not get selected"
+        else:
+            extracted["left_remarks"] = "Did not get any information from the employer"
+
+    elif any(k in text for k in ["different job", "new company", "switched company", "changed job", "another company"]):
+        extracted["retention_status"] = "Working in different job"
+    elif any(k in text for k in ["will join", "joining next", "offer letter received", "joining after"]):
+        extracted["retention_status"] = "Will joined after some days"
+    elif any(k in text for k in ["didn't share", "refused", "busy call later", "withheld"]):
+        extracted["retention_status"] = "Confirmed Name But Didn't Share Any Information."
+    else:
+        extracted["retention_status"] = "Working in same job"
+
+    # Extract Salary if numeric digits found
+    sal_match = re.search(r"(?:salary|sal|earning|stipend)?\s*(?:inr|rs\.?|₹)?\s*(\d{4,6}|\d{1,2}k)\b", text)
+    if sal_match:
+        val = sal_match.group(1).replace(",", "")
+        if "k" in val:
+            val = str(int(float(val.replace("k", "")) * 1000))
+        extracted["salary"] = val
+    else:
+        if extracted.get("retention_status") in ["Working in same job", "Left_The_Job"]:
+            extracted["salary"] = str(student_info.get("salary", ""))
+
+    # Extract NPS rating
+    nps_match = re.search(r"\b(?:nps|rating|rate|score)?\s*([0-9]|10)(?:\s*/\s*10)?\b", text)
+    if nps_match:
+        extracted["nps"] = nps_match.group(1)
+    else:
+        extracted["nps"] = "10"
+
+    # Satisfaction
+    if "not satisfied" in text or "unhappy" in text:
+        extracted["satisfied"] = "No"
+    else:
+        extracted["satisfied"] = "Yes"
+
+    # Need further job
+    if any(k in text for k in ["further job dont share", "further job don't share", "job dont share", "job don't share"]):
+        extracted["need_further_job"] = "Don't Share"
+    elif any(k in text for k in ["need job", "looking for job", "needs another job", "better opportunity"]):
+        extracted["need_further_job"] = "YES"
+    else:
+        extracted["need_further_job"] = "NO"
+
+    # Months working extraction (e.g. "3 months", "worked 6 months", "left after 2 months")
+    m_match = re.search(r"\b(\d{1,2}\s*(?:months?|mths?|mon))\b", text, re.IGNORECASE)
+    if m_match:
+        extracted["months"] = m_match.group(1).title()
+
+    return extracted
+
+def generate_ai_calling_script(student: dict, lang: str = "English") -> dict:
+    """Generates a dynamic multi-lingual calling script personalized for the student (No API key needed)"""
+    s_name = student.get("student_name", "Student")
+    company = student.get("company_name", "your placed company")
+    desig = student.get("designation", "Intern")
+    salary = student.get("salary", "10000")
+    donor = student.get("donor_name", "Anudip")
+    centre = student.get("centre_name", "Anudip Centre")
+
+    if lang == "Telugu":
+        greeting = f"నమస్కారం {s_name} గారూ! నేను అనుదీప్ ఫౌండేషన్ ({donor} ప్రోగ్రామ్, {centre}) నుండి మాట్లాడుతున్నాను. మీతో 1 నిమిషం మాట్లాడవచ్చా?"
+        verification = f"మా రికార్డు ప్రకారం మీరు {company} లో {desig} గా (నెలకు ₹{salary}) చేరారు. మీరు ప్రస్తుతం ఇదే ఉద్యోగంలో కొనసాగుతున్నారా?"
+        training_check = "అలాగే అనుదీప్ ట్రైనింగ్ అసెస్‌మెంట్ ఇచ్చారా మరియు మీకు అనుదీప్ నుండి సర్టిఫికేట్ అందిందా?"
+        feedback = "మీ ప్రస్తుత ఉద్యోగ అనుభవం ఎలా ఉంది? అనుదీప్ శిక్షణపై 1 నుండి 10 వరకు ఎంత రేటింగ్ ఇస్తారు?"
+        closing = f"ధన్యవాదాలు {s_name} గారూ! మీ కెరీర్‌లో మరింత ఉన్నత శిఖరాలకు చేరుకోవాలని అనుదీప్ ఫౌండేషన్ మరియు {donor} ఆశిస్తోంది. శుభదినం!"
+    elif lang == "Hindi":
+        greeting = f"नमस्ते {s_name} जी! मैं अनुदीप फाउंडेशन ({donor} प्रोजेक्ट, {centre}) से कॉल कर रहा/रही हूँ। क्या मेरी बात {s_name} से हो रही है?"
+        verification = f"हमारे रिकॉर्ड के अनुसार आपका प्लेसमेंट {company} में {desig} के पद पर (वेतन ₹{salary}) हुआ था। क्या आप अभी भी इसी कंपनी में कार्यरत हैं?"
+        training_check = "क्या आपने अनुदीप का असेसमेंट पूरा किया था और क्या आपको सर्टिफिकेट मिल गया है?"
+        feedback = "कंपनी में आपका कार्य कैसा चल रहा है? अनुदीप ट्रेनिंग को आप 1 से 10 के पैमाने पर कितना स्कोर देंगे?"
+        closing = f"धन्यवाद {s_name} जी! आपके उज्ज्वल भविष्य के लिए अनुदीप और {donor} की ओर से हार्दिक शुभकामनाएँ।"
+    elif lang == "Bengali":
+        greeting = f"নমস্কার {s_name}! আমি অনুদীপ ফাউন্ডেশন ({donor} প্রজেক্ট, {centre}) থেকে ফোন করছি। আপনার সাথে কি ১ মিনিট কথা বলা যাবে?"
+        verification = f"আমাদের কাছে রেকর্ড রয়েছে যে আপনি {company}-তে {desig} পদে (মাসিক বেতন ₹{salary}) যোগ দিয়েছিলেন। আপনি কি এখনও সেখানেই কাজ করছেন?"
+        training_check = "আপনি কি অনুদীপের কোর্স অ্যাসেসমেন্ট দিয়েছিলেন এবং সার্টিফিকেট পেয়েছেন?"
+        feedback = "আপনার বর্তমান কাজের অভিজ্ঞতা কেমন? অনুদীপ ট্রেনিং ও সার্ভিসের জন্য ১ থেকে ১০-এর মধ্যে কত রেটিং দেবেন?"
+        closing = f"অসংখ্য ধন্যবাদ {s_name}! আপনার উজ্জ্বল ভবিষ্যতের জন্য অনুদীপ ফাউন্ডেশনের পক্ষ থেকে আন্তরিক শুভেচ্ছা।"
+    elif lang == "Tamil":
+        greeting = f"வணக்கம் {s_name}! நான் அனுதீப் அறக்கட்டளையிலிருந்து ({donor} திட்டம்) அழைக்கிறேன். உங்களிடம் 1 நிமிடம் பேசலாமா?"
+        verification = f"நீங்கள் {company} நிறுவனத்தில் {desig} ஆக (ரூ. {salary}) பணியில் இணைந்ததாக எங்கள் பதிவேட்டில் உள்ளது. நீங்கள் தற்போது அதே வேலையில் தொடர்கிறீர்களா?"
+        training_check = "அனுதீப் பயிற்சி சான்றிதழ் உங்களுக்கு கிடைத்ததா?"
+        feedback = "உங்கள் தற்போதைய வேலை அனுபவம் திருப்திகரமாக உள்ளதா? 1 முதல் 10 வரை எவ்வளவு மதிப்பீடு வழங்குவீர்கள்?"
+        closing = f"நன்றி {s_name}! உங்கள் எதிர்கால வளர்ச்சிக்கு அனுதீப் அறக்கட்டளையின் வாழ்த்துக்கள்."
+    else: # English
+        greeting = f"Hello {s_name}! I am calling from Anudip Foundation ({donor} Program, {centre}). Am I speaking with {s_name}?"
+        verification = f"As per our official records, you joined {company} as an {desig} (Monthly ₹{salary}). Are you currently continuing in this same position?"
+        training_check = "Did you complete your final course assessment and have you received your Anudip completion certificate?"
+        feedback = "How is your work experience at the company so far? On a scale of 0 to 10, how likely are you to recommend Anudip to friends and family?"
+        closing = f"Thank you so much {s_name} for your valuable time. Anudip Foundation and {donor} wish you continued success in your career!"
+
+    return {
+        "greeting": greeting,
+        "verification": verification,
+        "training_check": training_check,
+        "feedback": feedback,
+        "closing": closing
+    }
+
+def compute_retention_risk_score(student: dict) -> dict:
+    """Computes an AI Career & Retention Stability Score based on profile factors (Local Rule-based)"""
+    salary_str = re.sub(r"\D", "", str(student.get("salary", "0")))
+    salary = int(salary_str) if salary_str else 10000
+
+    score = 85
+    reasons = []
+
+    if salary >= 15000:
+        score += 10
+        reasons.append("Competitive compensation (₹15,000+)")
+    elif salary < 9000:
+        score -= 15
+        reasons.append("Entry-level stipend below ₹9,000")
+
+    desig = str(student.get("designation", "")).lower()
+    if "intern" in desig or "trainee" in desig:
+        score -= 5
+        reasons.append("Intern/Trainee role (tenure check recommended)")
+
+    score = max(35, min(98, score))
+
+    if score >= 80:
+        badge_color = "#16a34a"
+        bg_color = "#dcfce7"
+        level = "High Stability (Low Risk)"
+    elif score >= 60:
+        badge_color = "#d97706"
+        bg_color = "#fef3c7"
+        level = "Moderate Retention Risk"
+    else:
+        badge_color = "#dc2626"
+        bg_color = "#fee2e2"
+        level = "High Retention Risk"
+
+    return {
+        "score": score,
+        "level": level,
+        "badge_color": badge_color,
+        "bg_color": bg_color,
+        "reasons": reasons
+    }
+
+# ==============================================================================
+# 🖥️ MAIN PLACEMENT DASHBOARD RENDERER
+# ==============================================================================
+def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
+    # Custom CSS for high-speed layout & modern card UI matching Images 1, 2, 3
+    st.markdown("""
+        <style>
+            .stButton > button {
+                border-radius: 8px !important;
+                font-weight: 700 !important;
+                height: 3.0em !important;
+                transition: all 0.15s ease-in-out !important;
+                border: 1px solid #cbd5e1 !important;
+                background-color: #ffffff !important;
+                color: #1e293b !important;
+            }
+            .stButton > button:hover {
+                transform: translateY(-1px) !important;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.08) !important;
+                border-color: #94a3b8 !important;
+                background-color: #f8fafc !important;
+            }
+            .stButton > button[kind="primary"] {
+                background: #ff4b4b !important;
+                color: #ffffff !important;
+                border: none !important;
+            }
+            .profile-card-enhanced {
+                background: #ffffff;
+                border: 1.5px solid #e2e8f0;
+                border-radius: 12px;
+                padding: 16px 20px;
+                margin-bottom: 14px;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.03);
+            }
+            .profile-title-bar {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                font-weight: 800;
+                color: #0f4c81;
+                font-size: 1.18rem;
+                margin-bottom: 14px;
+            }
+            .profile-label-styled {
+                font-size: 0.78rem;
+                color: #64748b;
+                text-transform: uppercase;
+                font-weight: 700;
+                letter-spacing: 0.5px;
+                margin-bottom: 2px;
+            }
+            .profile-val-styled {
+                font-size: 1.02rem;
+                font-weight: 800;
+                color: #0f172a;
+            }
+            .question-pill-header {
+                background: #f8fafc;
+                border: 1.5px solid #e2e8f0;
+                border-radius: 8px 8px 0 0;
+                padding: 7px 12px;
+                font-size: 0.88rem;
+                font-weight: 800;
+                color: #1e293b;
+                text-align: center;
+            }
+            .ai-copilot-box {
+                background: linear-gradient(135deg, #f8fafc 0%, #eff6ff 100%);
+                border: 1.5px solid #bfdbfe;
+                border-radius: 10px;
+                padding: 12px 16px;
+                margin-top: 10px;
+                margin-bottom: 14px;
+            }
+            .nocontact-pinned-card {
+                background: #fff7ed;
+                border: 1.5px solid #fed7aa;
+                border-left: 5px solid #ea580c;
+                border-radius: 10px;
+                padding: 14px 18px;
+                margin-bottom: 1.2rem;
+                box-shadow: 0 2px 8px rgba(234, 88, 12, 0.08);
+            }
+            .fresh-pinned-card {
+                background: #f0fdf4;
+                border: 1.5px solid #86efac;
+                border-left: 5px solid #16a34a;
+                border-radius: 10px;
+                padding: 14px 18px;
+                margin-bottom: 1.2rem;
+                box-shadow: 0 2px 8px rgba(22, 163, 74, 0.08);
+            }
+        </style>
+    """, unsafe_allow_html=True)
+
+    # 1. Fetch all placement rows (cached)
+    all_rows = fetch_placement_master_data(placement_ws)
+    if not all_rows:
+        st.error("⚠️ Could not load data from Google Sheet 'Placement_Verification'. Please check permissions or connection.")
+        return
+
+    # Parse all records
+    all_placement_students = parse_all_placement_students(all_rows)
+    if not all_placement_students:
+        st.warning("No placement records found in the Google Sheet.")
+        return
+
+    # Live session buffer initialization
+    if "placement_live_history" not in st.session_state:
+        st.session_state.placement_live_history = []
+
+    # All distinct SPOCs from sheet
+    all_spocs = sorted(list({s["called_by"].strip().title() for s in all_placement_students if s["called_by"]}))
+
+    # Render Respective SPOC Data Download in Sidebar (Picture 2 requirement)
+    render_placement_sidebar_download(
+        all_placement_students=all_placement_students,
+        current_spoc=current_spoc,
+        is_admin=is_admin,
+        live_history=st.session_state.placement_live_history,
+        all_rows=all_rows,
+        placement_ws=placement_ws
+    )
+
+    # Top Brand Header Banner
+    st.markdown("""
+        <div style="background: linear-gradient(135deg, #1e3a8a 0%, #0f4c81 100%); padding: 1.2rem 1.6rem; border-radius: 12px; color: white; margin-bottom: 1.2rem; box-shadow: 0 4px 14px rgba(15, 76, 129, 0.2);">
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                <div>
+                    <h2 style="color: #ffffff; margin: 0; font-size: 1.5rem; font-weight: 800; letter-spacing: -0.5px;">⚡ High Speed Placement Verification System</h2>
+                    <p style="color: #93c5fd; margin: 3px 0 0 0; font-size: 0.92rem;">Placement & Retention Calling Portal | Respective SPOC Verification Sheet</p>
+                </div>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="background: rgba(255,255,255,0.15); padding: 6px 14px; border-radius: 20px; font-weight: 700; font-size: 0.88rem; border: 1px solid rgba(255,255,255,0.3);">
+                        💼 Placement Module
+                    </span>
+                    <span style="background: #22c55e; color: #ffffff; padding: 6px 14px; border-radius: 20px; font-weight: 800; font-size: 0.88rem;">
+                        👤 {current_spoc}
+                    </span>
+                </div>
+            </div>
+        </div>
+    """.replace("{current_spoc}", current_spoc.title()), unsafe_allow_html=True)
+
+    # ==========================================================================
+    # 🌟 IMAGE 1: PERFORMANCE VIEW SELECTOR (Board 1 & Board 2)
+    # ==========================================================================
+    view_options = ["🌟 All Team Combined (Portal Total)"] + all_spocs
+
+    col_view_lbl, col_view_sel, col_view_cid, col_lock, col_prog = st.columns([1.1, 1.4, 1.3, 0.75, 0.75])
+    with col_view_lbl:
+        st.markdown("<div style='padding-top: 6px; font-weight: 800; color: #0f4c81; font-size: 1.05rem;'>📊 Select Performance View:</div>", unsafe_allow_html=True)
+    with col_view_sel:
+        # Check if view was overridden
+        forced_view = st.session_state.get("plc_perf_view")
+        if forced_view and forced_view in view_options:
+            default_v_idx = view_options.index(forced_view)
+        elif not is_admin and current_spoc.title() in view_options:
+            default_v_idx = view_options.index(current_spoc.title())
+        else:
+            default_v_idx = 0
+
+        selected_perf_view = st.selectbox(
+            "Select Performance View",
+            view_options,
+            index=default_v_idx,
+            label_visibility="collapsed",
+            key="plc_perf_view_selector_box"
+        )
+        st.session_state.plc_perf_view = selected_perf_view
+
+    # Compute stats based on selected view
+    if selected_perf_view == "🌟 All Team Combined (Portal Total)":
+        display_scope_name = "All Team Combined"
+        raw_scoped = [dict(s) for s in all_placement_students]
+    else:
+        display_scope_name = selected_perf_view
+        raw_scoped = [dict(s) for s in all_placement_students if s["called_by"].strip().lower() == selected_perf_view.strip().lower()]
+
+    spoc_target_name = current_spoc if selected_perf_view == "🌟 All Team Combined (Portal Total)" else selected_perf_view
+    spoc_all_for_target = [s for s in all_placement_students if s["called_by"].strip().lower() == spoc_target_name.strip().lower()]
+
+    view_cids = sorted(list({str(s.get("call_id", "")).strip() for s in raw_scoped if str(s.get("call_id", "")).strip()}))
+    for def_cid in ["1000", "1153"]:
+        if def_cid not in view_cids and any(str(s.get("call_id", "")).strip() == def_cid for s in all_placement_students):
+            view_cids.append(def_cid)
+    view_cids = sorted(view_cids)
+
+    locked_cids_for_target = {c for c in view_cids if is_placement_batch_locked(spoc_target_name, c, spoc_all_for_target)}
+    active_cids_for_target = [c for c in view_cids if c not in locked_cids_for_target]
+
+    # CLEAN Scope by Call ID: Exactly "All Call IDs" + clean Call IDs (e.g. 1153, 1000)
+    cid_board_options = ["All Call IDs"] + view_cids
+
+    with col_view_cid:
+        selected_board_cid = st.selectbox(
+            "🏷️ Scope by Call ID",
+            cid_board_options,
+            index=0,
+            key=f"plc_board_cid_{selected_perf_view}"
+        )
+
+    # 2 ACTION BUTTONS: [ 🔒 Locked ] and [ ⏳ Progress ]
+    SUPER_ADMINS = {"kalpana", "pritam", "nibedan"}
+    current_user_clean = current_spoc.strip().lower()
+    is_super_admin = current_user_clean in SUPER_ADMINS
+
+    with col_lock:
+        st.markdown("<div style='font-size: 0.8rem; font-weight: 700; color: #475569; margin-bottom: 2px;'>Action</div>", unsafe_allow_html=True)
+        btn_lock_clicked = st.button("🔒 Locked", type="primary", key=f"plc_btn_lock_{selected_perf_view}", use_container_width=True, help="Lock campaign and mark all calls as Done")
+
+    with col_prog:
+        st.markdown("<div style='font-size: 0.8rem; font-weight: 700; color: #475569; margin-bottom: 2px;'>&nbsp;</div>", unsafe_allow_html=True)
+        btn_prog_clicked = st.button("⏳ Progress", key=f"plc_btn_prog_{selected_perf_view}", use_container_width=True, help="Reopen campaign back to Progress")
+
+    # Execution of Locked Action
+    if btn_lock_clicked:
+        if is_super_admin and selected_perf_view == "🌟 All Team Combined (Portal Total)":
+            if selected_board_cid == "All Call IDs":
+                target_students = all_placement_students
+                target_cids_to_lock = view_cids
+            else:
+                target_students = [s for s in all_placement_students if str(s.get("call_id", "")).strip() == selected_board_cid]
+                target_cids_to_lock = [selected_board_cid]
+            all_spoc_names = {s["called_by"].strip().lower() for s in target_students if s["called_by"].strip()}
+            for spk in all_spoc_names:
+                for c in target_cids_to_lock:
+                    set_placement_batch_lock(spk, c, True)
+            lock_msg = f"Admin Forcefully Locked {len(target_students)} calls across all SPOCs for {selected_board_cid}!"
+        else:
+            action_spoc = spoc_target_name.strip().lower() if is_super_admin else current_user_clean
+            if selected_board_cid == "All Call IDs":
+                target_students = [s for s in all_placement_students if s["called_by"].strip().lower() == action_spoc]
+                target_cids_to_lock = list({str(s.get("call_id", "")).strip() for s in target_students if str(s.get("call_id", "")).strip()})
+            else:
+                target_students = [s for s in all_placement_students if s["called_by"].strip().lower() == action_spoc and str(s.get("call_id", "")).strip() == selected_board_cid]
+                target_cids_to_lock = [selected_board_cid]
+            for c in target_cids_to_lock:
+                set_placement_batch_lock(action_spoc, c, True)
+            lock_msg = f"Locked {len(target_students)} calls for {action_spoc.title()} ({selected_board_cid})!"
+
+        updates_map = {}
+        batch_updates = []
+        for s in target_students:
+            s["call_status"] = "Done"
+            c_cid = str(s.get("call_id", "")).strip() or (selected_board_cid if selected_board_cid != "All Call IDs" else "1153")
+            spk_name = s["called_by"].strip()
+            c_concat = f"{spk_name}{c_cid}"
+            s["concat"] = c_concat
+            updates_map[s["row_num"]] = ([], "Done", c_cid, c_concat)
+            batch_updates.append({
+                'range': f'AH{s["row_num"]}:AJ{s["row_num"]}',
+                'values': [['Done', c_cid, c_concat]]
+            })
+
+        batch_update_in_memory_placement_rows(updates_map)
+        st.session_state.placement_queue_index = 0
+        save_placement_progress(current_spoc, 0)
+        if placement_ws and batch_updates:
+            _PLACEMENT_BG_EXECUTOR.submit(_bg_batch_sheet_worker, placement_ws, list(batch_updates))
+        st.toast(f"🔒 {lock_msg} All records marked DONE in Google Sheet!", icon="✅")
+        time.sleep(0.3)
+        st.rerun()
+
+    # Execution of Progress Action
+    if btn_prog_clicked:
+        if is_super_admin and selected_perf_view == "🌟 All Team Combined (Portal Total)":
+            if selected_board_cid == "All Call IDs":
+                target_students = all_placement_students
+                target_cids_to_unlock = view_cids
+            else:
+                target_students = [s for s in all_placement_students if str(s.get("call_id", "")).strip() == selected_board_cid]
+                target_cids_to_unlock = [selected_board_cid]
+            all_spoc_names = {s["called_by"].strip().lower() for s in target_students if s["called_by"].strip()}
+            for spk in all_spoc_names:
+                for c in target_cids_to_unlock:
+                    set_placement_batch_lock(spk, c, False)
+            prog_msg = f"Admin Forcefully Reopened {len(target_students)} calls across all SPOCs for {selected_board_cid} to Progress!"
+        else:
+            action_spoc = spoc_target_name.strip().lower() if is_super_admin else current_user_clean
+            if selected_board_cid == "All Call IDs":
+                target_students = [s for s in all_placement_students if s["called_by"].strip().lower() == action_spoc]
+                target_cids_to_unlock = list({str(s.get("call_id", "")).strip() for s in target_students if str(s.get("call_id", "")).strip()})
+            else:
+                target_students = [s for s in all_placement_students if s["called_by"].strip().lower() == action_spoc and str(s.get("call_id", "")).strip() == selected_board_cid]
+                target_cids_to_unlock = [selected_board_cid]
+            for c in target_cids_to_unlock:
+                set_placement_batch_lock(action_spoc, c, False)
+            prog_msg = f"Reopened {len(target_students)} calls for {action_spoc.title()} ({selected_board_cid}) to Progress!"
+
+        updates_map = {}
+        batch_updates = []
+        for s in target_students:
+            s["call_status"] = "Progress"
+            c_cid = str(s.get("call_id", "")).strip() or (selected_board_cid if selected_board_cid != "All Call IDs" else "1153")
+            spk_name = s["called_by"].strip()
+            c_concat = f"{spk_name}{c_cid}"
+            s["concat"] = c_concat
+            updates_map[s["row_num"]] = ([], "Progress", c_cid, c_concat)
+            batch_updates.append({
+                'range': f'AH{s["row_num"]}:AJ{s["row_num"]}',
+                'values': [['Progress', c_cid, c_concat]]
+            })
+
+        batch_update_in_memory_placement_rows(updates_map)
+        if placement_ws and batch_updates:
+            _PLACEMENT_BG_EXECUTOR.submit(_bg_batch_sheet_worker, placement_ws, list(batch_updates))
+        st.toast(f"⏳ {prog_msg} Updated to 'Progress' in Google Sheet!", icon="🔄")
+        time.sleep(0.3)
+        st.rerun()
+
+    if selected_board_cid == "All Call IDs":
+        if active_cids_for_target:
+            scoped_students = [s for s in raw_scoped if str(s.get("call_id", "")).strip() in active_cids_for_target]
+        else:
+            prog_students = [s for s in raw_scoped if s.get("call_status", "").strip().lower() != "done"]
+            scoped_students = prog_students if prog_students else raw_scoped
+    else:
+        scoped_students = [s for s in raw_scoped if str(s.get("call_id", "")).strip() == selected_board_cid]
+        display_scope_name = f"{display_scope_name} ({selected_board_cid})"
+
+    # Clean inline batch status chip
+    if selected_board_cid != "All Call IDs":
+        is_cur_locked = is_placement_batch_locked(spoc_target_name, selected_board_cid, spoc_all_for_target)
+        c_tot = len([s for s in spoc_all_for_target if str(s.get("call_id", "")).strip() == selected_board_cid])
+        c_done = sum(1 for s in spoc_all_for_target if str(s.get("call_id", "")).strip() == selected_board_cid and s.get("call_status") == "Done")
+        c_prog = c_tot - c_done
+        if is_cur_locked:
+            st.markdown(f"<div style='font-size: 0.84rem; padding: 4px 10px; background: #dcfce7; border: 1.2px solid #86efac; border-radius: 6px; color: #166534; font-weight: 700; display: inline-block; margin-bottom: 10px;'>🔒 Batch <b>{selected_board_cid}</b>: LOCKED & COMPLETED ({c_tot}/{c_tot} Done) for {spoc_target_name.title()} &nbsp;|&nbsp; Concat: <code>{spoc_target_name.title()}{selected_board_cid}</code></div>", unsafe_allow_html=True)
+        else:
+            st.markdown(f"<div style='font-size: 0.84rem; padding: 4px 10px; background: #eff6ff; border: 1.2px solid #bfdbfe; border-radius: 6px; color: #1e40af; font-weight: 700; display: inline-block; margin-bottom: 10px;'>⏳ Batch <b>{selected_board_cid}</b>: IN PROGRESS ({c_done} Done, {c_prog} Pending) for {spoc_target_name.title()} &nbsp;|&nbsp; Concat: <code>{spoc_target_name.title()}{selected_board_cid}</code></div>", unsafe_allow_html=True)
+
+    for i, s in enumerate(scoped_students):
+        s["queue_index"] = i
+
+    # Active Queue determination (prioritized so popover components have full access)
+    if is_admin and selected_perf_view != "🌟 All Team Combined (Portal Total)":
+        active_queue_students = scoped_students
+    elif not is_admin:
+        active_queue_students = scoped_students
+    else:
+        active_queue_students = get_placement_students_for_spoc(all_rows, current_spoc)
+        for i, s in enumerate(active_queue_students):
+            s["queue_index"] = i
+
+    if not active_queue_students:
+        st.warning(f"No students allocated for '{display_scope_name}'. Please choose another view.")
+        return
+
+    scope_stats = compute_placement_stats(scoped_students, st.session_state.placement_live_history)
+    v_assigned = scope_stats["total_assigned"]
+    v_called = scope_stats["total_called"]
+    v_yes = scope_stats["yes_count"]
+    v_no = scope_stats["no_count"]
+    v_pending = scope_stats["fresh_pending"]
+    v_rate = scope_stats["contactable_pct"]
+
+    # Render Dual Operational Boards
+    col_b1, col_b2 = st.columns(2)
+    with col_b1:
+        b1_card = f"""<div style="background: linear-gradient(135deg, #f0fdf4 0%, #ffffff 100%); border: 1.5px solid #86efac; border-left: 6px solid #16a34a; border-radius: 12px; padding: 14px 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.04); min-height: 165px;">
+<div style="display: flex; justify-content: space-between; align-items: flex-start;">
+<div>
+<span style="font-size: 0.8rem; font-weight: 700; color: #166534; text-transform: uppercase; letter-spacing: 0.5px;">📋 Board 1: Calling Pipeline ({display_scope_name})</span>
+<div style="display: flex; align-items: baseline; gap: 10px; margin-top: 4px;">
+<span style="font-size: 2.3rem; font-weight: 900; color: #15803d; line-height: 1;">{v_pending}</span>
+<span style="font-size: 1.05rem; font-weight: 800; color: #166534;">Fresh Calls Pending</span>
+</div>
+</div>
+<span style="background: #dcfce7; color: #15803d; border: 1px solid #bbf7d0; padding: 4px 10px; border-radius: 20px; font-size: 0.82rem; font-weight: 700;">Target: {v_assigned}</span>
+</div>
+<div style="margin-top: 12px; padding-top: 10px; border-top: 1px dashed #bbf7d0; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; font-size: 0.88rem;">
+<span style="color: #374151;">Total Assigned: <b>{v_assigned}</b></span>
+<span style="color: #2563eb;">Total Called: <b>{v_called}</b></span>
+<span style="color: #16a34a;">Yes (Contacted): <b>{v_yes}</b></span>
+<span style="color: #dc2626;">No (Unreached): <b>{v_no}</b></span>
+</div>
+<div style="margin-top: 8px; font-size: 0.78rem; color: #6b7280;">
+💡 <b>Calculation:</b> Total Calls ({v_assigned}) − Called ({v_called}) [Yes: {v_yes} + No: {v_no}] = <b>{v_pending} Fresh Pending</b>
+</div>
+</div>"""
+        st.markdown(b1_card, unsafe_allow_html=True)
+
+    with col_b2:
+        b2_card = f"""<div style="background: linear-gradient(135deg, #eff6ff 0%, #ffffff 100%); border: 1.5px solid #93c5fd; border-left: 6px solid #2563eb; border-radius: 12px; padding: 14px 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.04); min-height: 165px;">
+<div style="display: flex; justify-content: space-between; align-items: flex-start;">
+<div>
+<span style="font-size: 0.8rem; font-weight: 700; color: #1e40af; text-transform: uppercase; letter-spacing: 0.5px;">🎯 Board 2: Contactability Rate ({display_scope_name})</span>
+<div style="display: flex; align-items: baseline; gap: 10px; margin-top: 4px;">
+<span style="font-size: 2.3rem; font-weight: 900; color: #1d4ed8; line-height: 1;">{v_rate:.1f}%</span>
+<span style="font-size: 1.05rem; font-weight: 800; color: #1e40af;">Contactable (% of Yes)</span>
+</div>
+</div>
+<span style="background: #dbeafe; color: #1d4ed8; border: 1px solid #bfdbfe; padding: 4px 10px; border-radius: 20px; font-size: 0.82rem; font-weight: 700;">{v_yes}/{v_called} Contacted</span>
+</div>
+<div style="margin-top: 12px; padding-top: 10px; border-top: 1px dashed #bfdbfe; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; font-size: 0.88rem;">
+<span style="color: #16a34a;">Contacted (Yes): <b>{v_yes}</b></span>
+<span style="color: #2563eb;">Total Attempted: <b>{v_called}</b></span>
+<span style="color: #dc2626;">Unreached (No): <b>{v_no}</b></span>
+</div>
+<div style="margin-top: 8px; font-size: 0.78rem; color: #6b7280;">
+💡 <b>Calculation:</b> (Contacted Yes [{v_yes}] ÷ Total Called [{v_called}]) × 100 = <b>{v_rate:.1f}% Contactable</b>
+</div>
+</div>"""
+        st.markdown(b2_card, unsafe_allow_html=True)
+
+    # Initialize unified pin state flags
+    if "pin_placement_no_call_list" not in st.session_state:
+        st.session_state.pin_placement_no_call_list = False
+    if "pin_placement_fresh_call_list" not in st.session_state:
+        st.session_state.pin_placement_fresh_call_list = False
+
+    def toggle_pin_no():
+        st.session_state.pin_placement_no_call_list = not st.session_state.get("pin_placement_no_call_list", False)
+        if st.session_state.pin_placement_no_call_list:
+            st.session_state.pin_placement_fresh_call_list = False
+            if "placement_no_queue_index" not in st.session_state:
+                st.session_state.placement_no_queue_index = 0
+
+    def unpin_no():
+        st.session_state.pin_placement_no_call_list = False
+        st.session_state.pop("placement_editing_row", None)
+        st.session_state.pop("placement_active_recall", None)
+
+    def toggle_pin_fresh():
+        st.session_state.pin_placement_fresh_call_list = not st.session_state.get("pin_placement_fresh_call_list", False)
+        if st.session_state.pin_placement_fresh_call_list:
+            st.session_state.pin_placement_no_call_list = False
+
+    def unpin_fresh():
+        st.session_state.pin_placement_fresh_call_list = False
+
+    # Popover buttons for Fresh Calls and Not Contactable
+    col_pop1, col_pop2 = st.columns(2)
+    with col_pop1:
+        st.markdown('<div class="fresh-call-header-btn">', unsafe_allow_html=True)
+        with st.popover(f"🟢 Fresh Calls ({v_pending} Pending) ⌄", use_container_width=True):
+            render_placement_fresh_call_list(
+                scope_stats,
+                display_scope_name,
+                all_placement_students=all_placement_students,
+                active_queue_students=active_queue_students,
+                is_admin=is_admin,
+                selected_perf_view=selected_perf_view,
+                key_prefix="pop"
+            )
+            st.markdown("---")
+            chk_pin_fresh = st.checkbox(
+                "📌 Keep Fresh List pinned above form",
+                value=st.session_state.get("pin_placement_fresh_call_list", False),
+                key=f"plc_chk_pin_fresh_{display_scope_name}"
+            )
+            if chk_pin_fresh != st.session_state.get("pin_placement_fresh_call_list", False):
+                st.session_state.pin_placement_fresh_call_list = chk_pin_fresh
+                if chk_pin_fresh:
+                    st.session_state.pin_placement_no_call_list = False
+                st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with col_pop2:
+        st.markdown('<div class="nocontact-header-btn">', unsafe_allow_html=True)
+        with st.popover(f"📞 Not Contactable ({v_no}) ⌄", use_container_width=True):
+            render_placement_not_contactable_list(
+                scope_stats,
+                display_scope_name,
+                all_placement_students=all_placement_students,
+                active_queue_students=active_queue_students,
+                is_admin=is_admin,
+                selected_perf_view=selected_perf_view,
+                key_prefix="pop"
+            )
+            st.markdown("---")
+            chk_pin_no = st.checkbox(
+                "📌 Keep 'No' List pinned above form",
+                value=st.session_state.get("pin_placement_no_call_list", False),
+                key=f"plc_chk_pin_no_{display_scope_name}"
+            )
+            if chk_pin_no != st.session_state.get("pin_placement_no_call_list", False):
+                st.session_state.pin_placement_no_call_list = chk_pin_no
+                if chk_pin_no:
+                    st.session_state.pin_placement_fresh_call_list = False
+                    if "placement_no_queue_index" not in st.session_state:
+                        st.session_state.placement_no_queue_index = 0
+                st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    # 1-Click Pin / Unpin Quick Controls Bar
+    col_tgl1, col_tgl2 = st.columns(2)
+    with col_tgl1:
+        if v_pending > 0:
+            is_f_pinned = bool(st.session_state.get("pin_placement_fresh_call_list", False))
+            btn_lbl_f = "📌 Unpin Fresh List" if is_f_pinned else "📌 Pin Fresh List above form"
+            st.button(
+                btn_lbl_f,
+                key=f"plc_tgl_btn_fresh_{display_scope_name}",
+                on_click=toggle_pin_fresh,
+                use_container_width=True
+            )
+    with col_tgl2:
+        if v_no > 0:
+            is_no_pinned = bool(st.session_state.get("pin_placement_no_call_list", False))
+            btn_lbl_no = "📌 Unpin 'No' List" if is_no_pinned else "📌 Pin 'No' List above form"
+            st.button(
+                btn_lbl_no,
+                key=f"plc_tgl_btn_no_{display_scope_name}",
+                on_click=toggle_pin_no,
+                use_container_width=True
+            )
+
+    # ==========================================================================
+    # 📌 PINNED QUEUE PANELS (INSTANT ZERO-LATENCY PINNING ABOVE TARGET FORM)
+    # ==========================================================================
+    if st.session_state.get("pin_placement_fresh_call_list") and v_pending > 0:
+        st.markdown('<div class="fresh-pinned-card">', unsafe_allow_html=True)
+        col_pf1, col_pf2 = st.columns([5, 1])
+        with col_pf1:
+            st.markdown(f"<div style='font-weight: 800; color: #166534; font-size: 1.05rem; display: flex; align-items: center; gap: 8px;'>🟢 Pinned Fresh Calling Queue ({display_scope_name}) — {v_pending} Pending</div>", unsafe_allow_html=True)
+        with col_pf2:
+            st.button(
+                "✖ Unpin List",
+                key=f"plc_btn_unpin_fresh_{display_scope_name}",
+                on_click=unpin_fresh,
+                use_container_width=True
+            )
+        render_placement_fresh_call_list(
+            scope_stats,
+            display_scope_name,
+            all_placement_students=all_placement_students,
+            active_queue_students=active_queue_students,
+            is_admin=is_admin,
+            selected_perf_view=selected_perf_view,
+            key_prefix="pin"
+        )
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    if st.session_state.get("pin_placement_no_call_list") and v_no > 0:
+        st.markdown('<div class="nocontact-pinned-card">', unsafe_allow_html=True)
+        col_pn1, col_pn2 = st.columns([5, 1])
+        with col_pn1:
+            st.markdown(f"<div style='font-weight: 800; color: #9a3412; font-size: 1.05rem; display: flex; align-items: center; gap: 8px;'>📞 Pinned Not Contactable Queue ('No' Calls) ({display_scope_name}) — {v_no} Calls</div>", unsafe_allow_html=True)
+        with col_pn2:
+            st.button(
+                "✖ Unpin List",
+                key=f"plc_btn_unpin_no_{display_scope_name}",
+                on_click=unpin_no,
+                use_container_width=True
+            )
+        render_placement_not_contactable_list(
+            scope_stats,
+            display_scope_name,
+            all_placement_students=all_placement_students,
+            active_queue_students=active_queue_students,
+            is_admin=is_admin,
+            selected_perf_view=selected_perf_view,
+            key_prefix="pin"
+        )
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown("<div style='margin-bottom: 14px;'></div>", unsafe_allow_html=True)
+
+    # Determine queue mode: Not Contactable mode vs Fresh Calling mode
+    no_queue_students = scope_stats.get("no_list", [])
+    is_no_mode = bool(st.session_state.get("pin_placement_no_call_list") and len(no_queue_students) > 0)
+
+    if is_no_mode:
+        working_queue = no_queue_students
+        total_assigned_queue = len(working_queue)
+        if "placement_no_queue_index" not in st.session_state:
+            st.session_state.placement_no_queue_index = 0
+
+        active_target_row = st.session_state.get("placement_editing_row") or st.session_state.get("placement_active_recall")
+        if active_target_row:
+            found_no_idx = None
+            for idx, s in enumerate(working_queue):
+                if s["row_num"] == active_target_row:
+                    found_no_idx = idx
+                    break
+            if found_no_idx is not None:
+                st.session_state.placement_no_queue_index = found_no_idx
+
+        current_q_idx = st.session_state.placement_no_queue_index
+        if current_q_idx >= total_assigned_queue:
+            current_q_idx = max(0, total_assigned_queue - 1)
+            st.session_state.placement_no_queue_index = current_q_idx
+        if current_q_idx < 0:
+            current_q_idx = 0
+            st.session_state.placement_no_queue_index = 0
+
+        current_student = working_queue[current_q_idx]
+
+        # Auto preset for this student if not yet present
+        r_num = current_student["row_num"]
+        if f"plc_preset_{r_num}" not in st.session_state:
+            st.session_state[f"plc_preset_{r_num}"] = {
+                "contactable": "No",
+                "assessment_given": normalize_tri_val(current_student.get("assessment_given"), "YES"),
+                "got_certificate": normalize_tri_val(current_student.get("got_certificate"), "YES"),
+                "got_job_from_anudip": normalize_tri_val(current_student.get("got_job_from_anudip"), "YES"),
+                "retention_status": current_student.get("retention_status") or "Working in same job",
+                "months": current_student.get("how_many_months") or ("3 Months" if current_student.get("retention_status") in ["Working in same job", "Working in different job"] else ""),
+                "company": current_student.get("current_company") or current_student.get("company_name", ""),
+                "salary": current_student.get("current_salary") or current_student.get("salary", ""),
+                "designation": current_student.get("current_designation") or current_student.get("designation", ""),
+                "doj": parse_date_safe(current_student.get("current_doj")) or parse_date_safe(current_student.get("doj")) or date.today(),
+                "need_further_job": normalize_tri_val(current_student.get("need_further_job"), "NO"),
+                "nps": current_student.get("nps") or "10",
+                "satisfied": current_student.get("satisfied_with_conversation") or "Yes",
+                "verification_date": date.today(),
+                "left_remarks": current_student.get("left_not_working_remarks", ""),
+                "not_joined_remarks": current_student.get("not_joined_remarks", "N/A"),
+                "nocont_reason": current_student.get("left_not_working_remarks", "") or "Did not respond to our call",
+                "remarks_2": current_student.get("remarks_2", "")
+            }
+        st.session_state.placement_active_recall = r_num
+    else:
+        working_queue = active_queue_students
+        total_assigned_queue = len(working_queue)
+        # Queue index management
+        if "placement_queue_index" not in st.session_state:
+            saved_q, saved_act = get_saved_placement_index(current_spoc, active_queue_students)
+            st.session_state.placement_queue_index = saved_q
+            st.session_state.placement_active_call_index = saved_act
+
+        current_q_idx = st.session_state.placement_queue_index
+
+        # Fail-safe: if placement_editing_row or placement_active_recall is active, ensure current_student matches that row
+        active_target_row = st.session_state.get("placement_editing_row") or st.session_state.get("placement_active_recall")
+        if active_target_row:
+            found_active_idx = None
+            for idx, s in enumerate(working_queue):
+                if s["row_num"] == active_target_row:
+                    found_active_idx = idx
+                    break
+            if found_active_idx is not None:
+                current_q_idx = found_active_idx
+                st.session_state.placement_queue_index = current_q_idx
+            else:
+                for g_idx, s in enumerate(all_placement_students):
+                    if s["row_num"] == active_target_row:
+                        working_queue = all_placement_students
+                        current_q_idx = g_idx
+                        st.session_state.placement_queue_index = current_q_idx
+                        break
+
+        if current_q_idx >= len(working_queue):
+            current_q_idx = max(0, len(working_queue) - 1)
+            st.session_state.placement_queue_index = current_q_idx
+
+        current_student = working_queue[current_q_idx]
+
+    # ==========================================================================
+    # 📍 RESUME BANNER (WELCOME BACK / RESUME PROGRESS LIKE IMPACT ASSESSMENT)
+    # ==========================================================================
+    if not is_no_mode and st.session_state.get("show_placement_resume_banner") and total_assigned_queue > 0 and current_q_idx > 0:
+        res_c1, res_c2, res_c3 = st.columns([3.2, 1.2, 1.2])
+        with res_c1:
+            st.info(f"📍 **Welcome back, {current_spoc.title()}!** Resumed at Target **#{current_q_idx + 1}** of {total_assigned_queue} ({v_pending} fresh calls pending).")
+        with res_c2:
+            if st.button("▶️ Continue Here", type="primary", use_container_width=True, key="plc_resume_continue"):
+                st.session_state.show_placement_resume_banner = False
+                st.rerun()
+        with res_c3:
+            if st.button("⏮️ Start from #1", use_container_width=True, key="plc_resume_start1"):
+                st.session_state.placement_queue_index = 0
+                st.session_state.show_placement_resume_banner = False
+                save_placement_progress(current_spoc, 0, active_queue_students[0]["contact_number"], active_call_index=st.session_state.get("placement_active_call_index", 0))
+                st.rerun()
+
+    if not is_no_mode and v_pending == 0:
+        st.success(f"🎉 **Outstanding work, {current_spoc.title()}!** All {v_assigned} assigned placement calls have been completed.")
+
+    # Re-Call Mode Active Banner (Only if not already in pinned not contactable mode)
+    if not is_no_mode and st.session_state.get("placement_active_recall") == current_student["row_num"]:
+        st.markdown(f"""
+            <div style="background: linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%); border: 1.5px solid #fed7aa; border-left: 6px solid #ea580c; border-radius: 10px; padding: 12px 18px; margin-bottom: 14px; box-shadow: 0 2px 6px rgba(234, 88, 12, 0.1);">
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                    <div>
+                        <span style="font-weight: 800; color: #9a3412; font-size: 1.05rem;">🔁 Re-Call Mode Active: Target #{current_q_idx + 1} — {current_student['student_name']}</span><br>
+                        <span style="color: #c2410c; font-size: 0.88rem;">Previously recorded as: <b>{current_student.get('left_not_working_remarks') or 'Not Contactable'}</b>. If student answers now, select <b>'Yes'</b> below to enter placement details!</span>
+                    </div>
+                    <span style="background: #ea580c; color: white; padding: 4px 12px; border-radius: 16px; font-weight: 700; font-size: 0.82rem;">RE-CALL IN PROGRESS</span>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+
+    # ==========================================================================
+    # 🎛️ IMAGE 2 & USER PIC: SEARCH & FETCH BAR + 5 NAVIGATION BUTTONS
+    # ==========================================================================
+    c_search, c_fetch, c_start, c_prev, c_next, c_clear, c_refresh = st.columns([2.6, 1.3, 0.85, 0.85, 0.85, 1.05, 1.05])
+
+    search_inp = c_search.text_input(
+        "Search or Target",
+        placeholder="Search phone or enter Target # (e.g. 71, 302)...",
+        label_visibility="collapsed",
+        key="plc_quick_search_input"
+    )
+
+    # ⚡ Fetch Details Button (Coral/Red primary button as in User Picture 2)
+    if c_fetch.button("⚡ Fetch Details", use_container_width=True, type="primary", key="plc_btn_fetch_details"):
+        target = search_inp.strip()
+        if target:
+            clean_num = target.lstrip("#").strip()
+            found_target = None
+            target_idx = None
+
+            # 1. Check if numeric target number (e.g. 71, 302, 1, 1153)
+            if clean_num.isdigit():
+                t_num = int(clean_num)
+                # Check within working queue first
+                if 1 <= t_num <= len(working_queue):
+                    target_idx = t_num - 1
+                    found_target = working_queue[target_idx]
+                else:
+                    # Search across all students
+                    for s in all_placement_students:
+                        if s["queue_index"] + 1 == t_num or s["row_num"] == t_num:
+                            found_target = s
+                            for a_idx, a_s in enumerate(working_queue):
+                                if a_s["row_num"] == s["row_num"]:
+                                    target_idx = a_idx
+                                    break
+                            break
+
+            # 2. Check if phone number
+            if not found_target:
+                c_phone = clean_phone(target)
+                if c_phone:
+                    for idx, s in enumerate(working_queue):
+                        if c_phone in clean_phone(s["contact_number"]) or c_phone in clean_phone(s["alt_contact_number"]):
+                            target_idx = idx
+                            found_target = s
+                            break
+                    if not found_target:
+                        for s in all_placement_students:
+                            if c_phone in clean_phone(s["contact_number"]) or c_phone in clean_phone(s["alt_contact_number"]):
+                                found_target = s
+                                break
+
+            # 3. Check if student name
+            if not found_target:
+                t_lower = target.lower()
+                for idx, s in enumerate(working_queue):
+                    if t_lower in s["student_name"].lower():
+                        target_idx = idx
+                        found_target = s
+                        break
+                if not found_target:
+                    for s in all_placement_students:
+                        if t_lower in s["student_name"].lower():
+                            found_target = s
+                            break
+
+            if found_target:
+                if target_idx is not None:
+                    if is_no_mode:
+                        st.session_state.placement_no_queue_index = target_idx
+                    else:
+                        st.session_state.placement_queue_index = target_idx
+                else:
+                    st.session_state.plc_perf_view = "🌟 All Team Combined (Portal Total)"
+                    st.session_state.plc_perf_view_selector_box = "🌟 All Team Combined (Portal Total)"
+                    st.session_state.placement_queue_index = found_target["queue_index"]
+
+                # If previously verified, load previous verification data for editing/updating!
+                r_num = found_target["row_num"]
+                if found_target.get("contactable"):
+                    st.session_state[f"plc_preset_{r_num}"] = {
+                        "contactable": "Yes" if found_target["contactable"].strip().lower() == "yes" else "No",
+                        "assessment_given": normalize_tri_val(found_target["assessment_given"], "YES"),
+                        "got_certificate": normalize_tri_val(found_target["got_certificate"], "YES"),
+                        "got_job_from_anudip": normalize_tri_val(found_target["got_job_from_anudip"], "YES"),
+                        "retention_status": found_target["retention_status"] or "Working in same job",
+                        "months": found_target["how_many_months"] or ("3 Months" if found_target.get("retention_status") in ["Working in same job", "Working in different job"] else ""),
+                        "company": found_target["current_company"] or found_target["company_name"],
+                        "salary": found_target["current_salary"] or found_target["salary"],
+                        "designation": found_target["current_designation"] or found_target["designation"],
+                        "doj": parse_date_safe(found_target["current_doj"]) or parse_date_safe(found_target["doj"]) or date.today(),
+                        "need_further_job": normalize_tri_val(found_target["need_further_job"], "NO"),
+                        "nps": found_target["nps"] or "10",
+                        "satisfied": found_target["satisfied_with_conversation"] or "Yes",
+                        "verification_date": date.today(),
+                        "left_remarks": found_target["left_not_working_remarks"],
+                        "not_joined_remarks": found_target["not_joined_remarks"],
+                        "nocont_reason": found_target["left_not_working_remarks"],
+                        "remarks_2": found_target["remarks_2"]
+                    }
+                    keys_to_clear = [k for k in st.session_state.keys() if f"_{r_num}" in k and k.startswith("plc_")]
+                    for k in keys_to_clear:
+                        st.session_state.pop(k, None)
+                    st.session_state.placement_editing_row = r_num
+
+                st.toast(f"Loaded Target #{found_target.get('queue_index', 0)+1} ({found_target['student_name']})!", icon="⚡")
+                st.rerun()
+            else:
+                st.warning(f"No student record found matching '{target}'.")
+
+    # 1. ⏮ #1 Button
+    if c_start.button("⏮ #1", use_container_width=True, help="Jump to Target #1 (Queue beginning)", disabled=(current_q_idx == 0 or total_assigned_queue == 0)):
+        if is_no_mode:
+            st.session_state.placement_no_queue_index = 0
+        else:
+            st.session_state.placement_queue_index = 0
+            save_placement_progress(current_spoc, 0, active_queue_students[0]["contact_number"], active_call_index=st.session_state.get("placement_active_call_index", 0))
+        st.session_state.pop("placement_editing_row", None)
+        st.session_state.pop("placement_active_recall", None)
+        st.toast("Jumped to Target #1!", icon="⏮️")
+        st.rerun()
+
+    # 2. ⬅ Prev Button
+    if c_prev.button("⬅ Prev", use_container_width=True, disabled=(current_q_idx <= 0 or total_assigned_queue == 0)):
+        if is_no_mode:
+            st.session_state.placement_no_queue_index = max(0, current_q_idx - 1)
+        else:
+            st.session_state.placement_queue_index = max(0, current_q_idx - 1)
+            prev_s = active_queue_students[st.session_state.placement_queue_index]
+            save_placement_progress(current_spoc, st.session_state.placement_queue_index, prev_s["contact_number"], active_call_index=st.session_state.get("placement_active_call_index", 0))
+        st.session_state.pop("placement_editing_row", None)
+        st.session_state.pop("placement_active_recall", None)
+        st.rerun()
+
+    # 3. Next ➡ Button
+    if c_next.button("Next ➡", use_container_width=True, disabled=(current_q_idx >= total_assigned_queue - 1 or total_assigned_queue == 0)):
+        if is_no_mode:
+            st.session_state.placement_no_queue_index = min(total_assigned_queue - 1, current_q_idx + 1)
+        else:
+            st.session_state.placement_queue_index = min(total_assigned_queue - 1, current_q_idx + 1)
+            if st.session_state.placement_queue_index > st.session_state.get("placement_active_call_index", 0):
+                st.session_state.placement_active_call_index = st.session_state.placement_queue_index
+            next_s = active_queue_students[st.session_state.placement_queue_index]
+            save_placement_progress(current_spoc, st.session_state.placement_queue_index, next_s["contact_number"], active_call_index=st.session_state.get("placement_active_call_index", 0))
+        st.session_state.pop("placement_editing_row", None)
+        st.session_state.pop("placement_active_recall", None)
+        st.rerun()
+
+    # 4. 🧹 Clear Form Button
+    if c_clear.button("🧹 Clear Form", use_container_width=True):
+        row_k = current_student["row_num"]
+        st.session_state.pop(f"plc_preset_{row_k}", None)
+        st.session_state.pop("placement_editing_row", None)
+        st.session_state.pop("placement_active_recall", None)
+        keys_to_remove = [k for k in st.session_state.keys() if f"_{row_k}" in k and k.startswith("plc_")]
+        for k in keys_to_remove:
+            st.session_state.pop(k, None)
+        st.toast("Form cleared for current student!", icon="🧹")
+        st.rerun()
+
+    # 5. 🔄 Refresh DB Button
+    if c_refresh.button("🔄 Refresh DB", use_container_width=True):
+        st.session_state.pop("placement_master_rows", None)
+        fetch_placement_master_data.clear()
+        st.cache_data.clear()
+        st.toast("Database cache refreshed from Google Sheets!", icon="🔄")
+        st.rerun()
+
+    prog_pct = min((current_q_idx + 1) / total_assigned_queue, 1.0) if total_assigned_queue > 0 else 0
+    st.progress(prog_pct)
+
+    col_t1, col_t2 = st.columns([5, 1.1])
+    phone_clean = clean_phone(current_student['contact_number'])
+
+    banner_bg = "linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%)" if is_no_mode else "linear-gradient(135deg, #e8f0fe 0%, #f0f7ff 100%)"
+    banner_border = "#ea580c" if is_no_mode else "#1a73e8"
+    banner_text_col = "#9a3412" if is_no_mode else "#1e3a8a"
+    banner_title_html = f"📞 Calling Not Contactable Target <b>#{current_q_idx + 1} of {total_assigned_queue}</b> (Target #{current_student.get('queue_index', 0) + 1})" if is_no_mode else f"🎯 Calling Target <b>#{current_q_idx + 1} of {total_assigned_queue}</b>"
+
+    with col_t1:
+        components.html(f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+        <style>
+            * {{ box-sizing: border-box; }}
+            body {{
+                margin: 0;
+                padding: 0;
+                background: transparent;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            }}
+            .queue-banner {{
+                background: {banner_bg};
+                padding: 8px 16px;
+                border-radius: 8px;
+                border-left: 5px solid {banner_border};
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                height: 48px;
+            }}
+            .banner-left {{
+                font-size: 1.0rem;
+                color: {banner_text_col};
+                font-weight: 700;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }}
+            .phone-link {{
+                color: #1a73e8;
+                font-weight: 800;
+                font-size: 1.08rem;
+                text-decoration: underline;
+            }}
+            .copy-banner-btn {{
+                border: 1.5px solid #2e7d32;
+                background-color: #ffffff;
+                color: #1b5e20;
+                font-weight: 700;
+                font-size: 0.90rem;
+                border-radius: 6px;
+                padding: 5px 14px;
+                cursor: pointer;
+                transition: all 0.2s ease-in-out;
+                display: inline-flex;
+                align-items: center;
+                gap: 5px;
+                white-space: nowrap;
+            }}
+            .copy-banner-btn:hover {{
+                background-color: #f0fdf4;
+                border-color: #15803d;
+                color: #14532d;
+                transform: translateY(-1px);
+            }}
+            .copy-banner-btn.copied {{
+                background-color: #16a34a !important;
+                color: #ffffff !important;
+                border-color: #15803d !important;
+            }}
+        </style>
+        </head>
+        <body>
+        <div class="queue-banner">
+            <div class="banner-left">
+                <span>{banner_title_html}</span>
+                <span>·</span>
+                <span style="color: #0f172a;">{current_student['student_name']}</span>
+                <span>·</span>
+                <a href="tel:{phone_clean}" class="phone-link">📞 {phone_clean}</a>
+            </div>
+            <div>
+                <button id="copyBtn" class="copy-banner-btn" onclick="copyNumber()">📋 Copy Phone Number</button>
+            </div>
+        </div>
+        <script>
+        function copyNumber() {{
+            const num = "{phone_clean}";
+            if (navigator.clipboard && window.isSecureContext) {{
+                navigator.clipboard.writeText(num).then(showSuccess, fallbackCopy);
+            }} else {{
+                fallbackCopy();
+            }}
+            function showSuccess() {{
+                const btn = document.getElementById("copyBtn");
+                btn.innerHTML = "✅ Copied!";
+                btn.className = "copy-banner-btn copied";
+                setTimeout(() => {{
+                    btn.innerHTML = "📋 Copy Phone Number";
+                    btn.className = "copy-banner-btn";
+                }}, 2000);
+            }}
+            function fallbackCopy() {{
+                const ta = document.createElement("textarea");
+                ta.value = num;
+                ta.style.position = "fixed";
+                ta.style.top = "0";
+                ta.style.left = "0";
+                ta.style.opacity = "0";
+                document.body.appendChild(ta);
+                ta.focus();
+                ta.select();
+                try {{
+                    document.execCommand("copy");
+                    showSuccess();
+                }} catch (e) {{
+                    console.error("Copy failed", e);
+                }}
+                document.body.removeChild(ta);
+            }}
+        }}
+        </script>
+        </body>
+        </html>
+        """, height=52)
+
+    with col_t2:
+        if st.button("⏭️ Skip", use_container_width=True, key=f"plc_skip_btn_{current_student['row_num']}"):
+            st.session_state.pop("placement_editing_row", None)
+            st.session_state.pop("placement_active_recall", None)
+            if is_no_mode:
+                st.session_state.placement_no_queue_index = min(total_assigned_queue - 1, current_q_idx + 1)
+            else:
+                st.session_state.placement_queue_index = min(total_assigned_queue - 1, current_q_idx + 1)
+                next_s = active_queue_students[st.session_state.placement_queue_index]
+                save_placement_progress(current_spoc, st.session_state.placement_queue_index, next_s["contact_number"], active_call_index=st.session_state.get("placement_active_call_index", 0))
+            st.toast("Skipped to next target", icon="⏭️")
+            st.rerun()
+
+    # ==========================================================================
+    # 🪪 IMAGE 3: STUDENT PLACEMENT PROFILE DETAILS (ENHANCED UI)
+    # ==========================================================================
+    st.markdown('<div class="profile-card-enhanced">', unsafe_allow_html=True)
+    st.markdown("""
+        <div class="profile-title-bar">
+            <span>👤 Student Placement Profile Details</span>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # Clean 4-Column Grid matching Picture 3
+    p_col1, p_col2, p_col3, p_col4 = st.columns(4)
+    with p_col1:
+        st.markdown(f"<div class='profile-label-styled'>Student Name</div><div class='profile-val-styled' style='font-size: 1.15rem; color: #0f172a;'>{current_student['student_name']}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='profile-label-styled' style='margin-top:10px;'>CMIS ID</div><div class='profile-val-styled' style='font-family: monospace; font-size: 0.95rem; background: #f1f5f9; padding: 2px 6px; border-radius: 4px; display: inline-block;'>{current_student['cmis_id'] or 'N/A'}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='profile-label-styled' style='margin-top:10px;'>Gender</div><div class='profile-val-styled' style='text-transform: capitalize;'>{current_student['gender'] or 'N/A'}</div>", unsafe_allow_html=True)
+
+    with p_col2:
+        phone_raw = current_student['contact_number']
+        wa_text = urllib.parse.quote(f"Hello {current_student['student_name']}, calling from Anudip Foundation ({current_student['donor_name']}) regarding your placement verification. Could you please take 1 minute to confirm your employment status? Thank you!")
+        st.markdown(f"""
+            <div class='profile-label-styled'>Contact Number</div>
+            <div style='display: flex; align-items: center; gap: 8px; flex-wrap: wrap;'>
+                <a href='tel:{phone_raw}' style='color:#1a73e8; font-weight:800; font-size:1.15rem; text-decoration: none;'>📞 {phone_raw}</a>
+                <a href='https://wa.me/91{clean_phone(phone_raw)}?text={wa_text}' target='_blank' style='background:#25d366; color:white; padding:2px 8px; border-radius:12px; font-size:0.75rem; text-decoration:none; font-weight:700;'>💬 WhatsApp</a>
+            </div>
+        """, unsafe_allow_html=True)
+        st.markdown(f"<div class='profile-label-styled' style='margin-top:10px;'>Alt. Contact</div><div class='profile-val-styled'>{current_student['alt_contact_number'] if current_student['alt_contact_number'] != '0' else 'None'}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='profile-label-styled' style='margin-top:10px;'>Donor Name</div><div class='profile-val-styled'><span style='background: #dbeafe; color: #1e40af; padding: 2px 8px; border-radius: 12px; font-size: 0.85rem; font-weight: 700;'>{current_student['donor_name'] or 'N/A'}</span></div>", unsafe_allow_html=True)
+
+    with p_col3:
+        st.markdown(f"<div class='profile-label-styled'>Centre Name</div><div class='profile-val-styled' style='font-size: 0.92rem; line-height: 1.3;'>{current_student['centre_name']}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='profile-label-styled' style='margin-top:10px;'>Course / State</div><div class='profile-val-styled'>{current_student['course']} &nbsp;·&nbsp; <b>{current_student['state']}</b></div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='profile-label-styled' style='margin-top:10px;'>Date of Joining (DOJ)</div><div class='profile-val-styled' style='font-family: monospace;'>{current_student['doj'] or 'N/A'}</div>", unsafe_allow_html=True)
+
+    with p_col4:
+        st.markdown(f"<div class='profile-label-styled'>Placed Company</div><div class='profile-val-styled' style='color:#0f4c81; font-size: 1.05rem;'>🏢 {current_student['company_name']}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='profile-label-styled' style='margin-top:10px;'>Designation</div><div class='profile-val-styled'>{current_student['designation']}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='profile-label-styled' style='margin-top:10px;'>Salary / Location</div><div class='profile-val-styled'>💰 ₹{current_student['salary']} &nbsp;·&nbsp; {current_student['job_location']}</div>", unsafe_allow_html=True)
+
+    st.markdown('<div style="height: 4px; background: linear-gradient(90deg, #f59e0b 0%, #fbbf24 100%); border-radius: 2px; margin: 16px 0 16px 0;"></div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # ==========================================================================
+    # 📝 IMAGE 3 & 4: CALL VERIFICATION QUESTIONNAIRE (CONDITIONAL WORKFLOW)
+    # ==========================================================================
+    is_already_verified = bool(current_student["contactable"])
+    is_edit_mode = st.session_state.get("placement_editing_row") == current_student["row_num"]
+
+    cur_cid = current_student.get("call_id", "1153" if current_student["row_num"] <= 1154 else "1000")
+    cur_cstatus = "Done" if (is_edit_mode or is_already_verified) else current_student.get("call_status", "Progress")
+    cstatus_bg = "#dcfce7" if cur_cstatus == "Done" else "#fef3c7"
+    cstatus_fg = "#166534" if cur_cstatus == "Done" else "#92400e"
+    cstatus_bd = "#bbf7d0" if cur_cstatus == "Done" else "#fde68a"
+
+    if is_no_mode:
+        status_badge_html = f"""
+        <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+            <span style="background: #e0f2fe; color: #0369a1; border: 1.5px solid #bae6fd; padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 0.84rem;">
+                🏷️ Call ID: {cur_cid}
+            </span>
+            <span style="background: #fff7ed; color: #9a3412; border: 1.5px solid #fed7aa; padding: 4px 10px; border-radius: 6px; font-weight: 800; font-size: 0.86rem;">
+                📞 NOT CONTACTABLE RE-CALL (#{current_q_idx + 1} of {total_assigned_queue})
+            </span>
+        </div>
+        """
+    elif is_edit_mode or is_already_verified:
+        status_badge_html = f"""
+        <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+            <span style="background: #e0f2fe; color: #0369a1; border: 1.5px solid #bae6fd; padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 0.84rem;">
+                🏷️ Call ID: {cur_cid}
+            </span>
+            <span style="background: {cstatus_bg}; color: {cstatus_fg}; border: 1.5px solid {cstatus_bd}; padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 0.84rem;">
+                📞 Status: {cur_cstatus}
+            </span>
+            <span style="background: #fef3c7; color: #92400e; border: 1.5px solid #fcd34d; padding: 4px 12px; border-radius: 6px; font-weight: 800; font-size: 0.88rem;">
+                ✏️ EDIT & UPDATE MODE (Row #{current_student['row_num']})
+            </span>
+        </div>
+        """
+    else:
+        status_badge_html = f"""
+        <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+            <span style="background: #e0f2fe; color: #0369a1; border: 1.5px solid #bae6fd; padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 0.84rem;">
+                🏷️ Call ID: {cur_cid}
+            </span>
+            <span style="background: {cstatus_bg}; color: {cstatus_fg}; border: 1.5px solid {cstatus_bd}; padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 0.84rem;">
+                📞 Status: {cur_cstatus}
+            </span>
+            <span style="background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 0.85rem;">
+                🆕 FRESH CALL VERIFICATION (Target #{current_q_idx + 1})
+            </span>
+        </div>
+        """
+
+    st.markdown('<div class="profile-card-enhanced" style="border-top: 4px solid #f59e0b;">', unsafe_allow_html=True)
+    st.markdown(f"""
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.2rem; flex-wrap: wrap; gap: 8px;">
+            <div style="font-size: 1.22rem; font-weight: 800; color: #0f4c81; display: flex; align-items: center; gap: 8px;">
+                📋 Call Verification Questionnaire
+            </div>
+            <div>{status_badge_html}</div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # Mode Alert Banner
+    if is_no_mode:
+        st.markdown(f"""
+            <div style="background: #fff7ed; border: 1.5px solid #fed7aa; border-left: 6px solid #ea580c; padding: 10px 14px; border-radius: 8px; margin-bottom: 14px;">
+                <b style="color: #9a3412; font-size: 0.98rem;">📞 Not Contactable Re-Call: Target #{current_q_idx + 1} of {total_assigned_queue} — {current_student['student_name']} (Original Target #{current_student.get('queue_index', 0) + 1}, Row #{current_student['row_num']}):</b>
+                <div style="color: #c2410c; font-size: 0.85rem; margin-top: 2px;">
+                    Previously unreached ({current_student.get('left_not_working_remarks') or 'Not Contactable'}). If the student answers now, select <b>'Yes'</b> to complete placement verification. Otherwise, update reason and save to progress to next.
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+    elif is_edit_mode or is_already_verified:
+        st.markdown(f"""
+            <div style="background: #fffbeb; border: 1.5px solid #fde68a; border-left: 6px solid #d97706; padding: 10px 14px; border-radius: 8px; margin-bottom: 14px;">
+                <b style="color: #92400e; font-size: 0.98rem;">✏️ Reviewing & Updating Target #{current_q_idx + 1} — {current_student['student_name']} (Row #{current_student['row_num']}):</b>
+                <div style="color: #b45309; font-size: 0.85rem; margin-top: 2px;">
+                    Previously saved details are loaded below. Update any fields and click <b>Update & Insert Placement Verification</b> to save your changes to Google Sheets.
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+
+    row_preset = st.session_state.get(f"plc_preset_{current_student['row_num']}", {})
+
+    # 1. Question 1: Is the student Contactable? (Call Status)
+    if "contactable" in row_preset:
+        def_cont_idx = 0 if row_preset["contactable"] == "Yes" else 1
+    else:
+        def_cont_idx = 0 if current_student["contactable"].strip().lower() != "no" else 1
+
+    st.markdown("""
+        <div class="question-pill-header" style="text-align: left; background: #eff6ff; border-color: #bfdbfe; color: #1e40af;">
+            1. Is the student Contactable? (Call Status)
+        </div>
+    """, unsafe_allow_html=True)
+
+    f_contactable = st.radio(
+        "Is the student Contactable? (Call Status)",
+        ["Yes", "No"],
+        index=def_cont_idx,
+        horizontal=True,
+        label_visibility="collapsed",
+        key=f"plc_rad_cont_{current_student['row_num']}"
+    )
+
+    # --------------------------------------------------------------------------
+    # ❌ CONDITION: IF CONTACTABLE == NO -> Retention Status = Unable_to_track
+    # --------------------------------------------------------------------------
+    if f_contactable == "No":
+        st.markdown("""
+            <div style="background: #fff7ed; border: 1.5px solid #fed7aa; border-left: 5px solid #ea580c; padding: 12px 16px; border-radius: 8px; margin: 12px 0;">
+                <b style="color: #9a3412; font-size: 0.98rem;">📞 Student Not Contactable:</b>
+                <span style="color: #c2410c; font-size: 0.9rem; margin-left: 8px;">Retention Status will be automatically recorded as <b>Unable_to_track</b>. Please select the specific calling disposition below.</span>
+            </div>
+        """, unsafe_allow_html=True)
+
+        existing_rem = row_preset.get("nocont_reason", current_student["left_not_working_remarks"].strip())
+        def_nocont_idx = 0
+        if existing_rem:
+            if existing_rem in PLACEMENT_UNABLE_TO_TRACK_OPTIONS:
+                def_nocont_idx = PLACEMENT_UNABLE_TO_TRACK_OPTIONS.index(existing_rem)
+            else:
+                ex_low = existing_rem.lower().strip()
+                for opt_i, opt_text in enumerate(PLACEMENT_UNABLE_TO_TRACK_OPTIONS):
+                    opt_low = opt_text.lower()
+                    if ex_low == opt_low:
+                        def_nocont_idx = opt_i
+                        break
+                    if "incoming" in ex_low and "available" in ex_low and "incoming" in opt_low and "available" in opt_low:
+                        def_nocont_idx = opt_i
+                        break
+                    if any(k in ex_low for k in ["ping", "ring", "rnr"]) and any(k in opt_low for k in ["ping", "ring", "rnr"]):
+                        def_nocont_idx = opt_i
+                        break
+                    if "disconnect" in ex_low and "disconnect" in opt_low:
+                        def_nocont_idx = opt_i
+                        break
+
+        c_no1, c_no2 = st.columns(2)
+        with c_no1:
+            st.markdown('<div class="question-pill-header">Call Remarks / Unable To Track Reason (Picture 4 Col 2)</div>', unsafe_allow_html=True)
+            f_nocont_reason = st.selectbox(
+                "Call Remarks / Unable To Track Reason",
+                PLACEMENT_UNABLE_TO_TRACK_OPTIONS,
+                index=def_nocont_idx,
+                label_visibility="collapsed",
+                key=f"plc_sel_nocont_{current_student['row_num']}"
+            )
+
+        with c_no2:
+            st.markdown('<div class="question-pill-header">Verification Date</div>', unsafe_allow_html=True)
+            st.session_state[f"plc_date_no_{current_student['row_num']}"] = date.today()
+            f_vdate_no = st.date_input(
+                "Verification Date",
+                value=date.today(),
+                disabled=True,
+                label_visibility="collapsed",
+                key=f"plc_date_no_{current_student['row_num']}"
+            )
+
+        f_remarks_2_no = st.text_area(
+            "Additional Calling Remarks (Optional / SPOC Notes)",
+            value=row_preset.get("remarks_2", current_student["remarks_2"]),
+            height=70,
+            key=f"plc_ta_rem2_no_{current_student['row_num']}",
+            placeholder="E.g. Called twice, ringing no response..."
+        )
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        btn_label_no = f"💾 Update & Insert Disposition (Row #{current_student['row_num']})" if (is_already_verified or is_edit_mode) else "💾 Submit Call Disposition (Not Contactable)"
+        if st.button(btn_label_no, type="primary", use_container_width=True, key=f"plc_sub_no_{current_student['row_num']}"):
+            with st.spinner("⚡ High Speed Sync to Google Sheets..."):
+                payload = [
+                    "No",                         # Q: Contactable
+                    "",                           # R: Assessment Given
+                    "",                           # S: Got Certificate
+                    "",                           # T: Have_You_Got_This_Job_From_Anudip
+                    "Unable_to_track",            # U: Retention Status
+                    "",                           # V: How Many Months Working
+                    "",                           # W: Current Company Name
+                    "",                           # X: Current Salary
+                    "",                           # Y: Current Designation
+                    "",                           # Z: DOJ
+                    "",                           # AA: Need any further job
+                    "",                           # AB: Net Promoter Score
+                    str(date.today()),            # AC: Verification Date
+                    f_nocont_reason,              # AD: Left The Job /Not Working/Not - Contactable Remarks
+                    "N/A",                        # AE: Not Joined Remarks
+                    "",                           # AF: Satisfied With Conversation
+                    f_remarks_2_no.strip()        # AG: Remarks 2
+                ]
+
+                try:
+                    p_cid = current_student.get("call_id") or ("1153" if current_student["row_num"] <= 1154 else "1000")
+                    p_concat = current_student.get("concat") or f"{current_student.get('called_by', '')}{p_cid}"
+                    current_student["call_status"] = "Done"
+                    current_student["concat"] = p_concat
+
+                    # 1. Update in-memory session rows immediately (Sub-millisecond)
+                    update_in_memory_placement_row(current_student['row_num'], payload, call_status="Done", call_id=p_cid, concat=p_concat)
+
+                    # 2. Asynchronous background sync to Google Sheets (Zero UI wait)
+                    dispatch_placement_sync(placement_ws, current_student['row_num'], payload, call_status="Done", call_id=p_cid, concat=p_concat)
+
+                    # 3. Update session live history (deduplicated by row_num)
+                    st.session_state.placement_live_history = [
+                        item for item in st.session_state.placement_live_history if item[0] != current_student['row_num']
+                    ]
+                    st.session_state.placement_live_history.insert(0, (current_student['row_num'], list(payload)))
+                    st.session_state.placement_live_history = st.session_state.placement_live_history[:20]
+                    st.session_state.pop("placement_editing_row", None)
+                    st.session_state.pop("placement_active_recall", None)
+
+                    # 4. Instant UI Toast
+                    st.toast(f"✅ Saved Target #{current_q_idx + 1} ({current_student['student_name']}) as Not Contactable!", icon="🚫")
+
+                    if is_no_mode:
+                        if current_q_idx + 1 < total_assigned_queue:
+                            st.session_state.placement_no_queue_index = current_q_idx + 1
+                        else:
+                            st.session_state.placement_no_queue_index = 0
+                    else:
+                        if current_q_idx + 1 < total_assigned_queue:
+                            st.session_state.placement_queue_index = current_q_idx + 1
+                            next_s = active_queue_students[current_q_idx + 1]
+                            save_placement_progress(current_spoc, current_q_idx + 1, next_s["contact_number"], active_call_index=st.session_state.get("placement_active_call_index", 0))
+
+                    time.sleep(0.1)
+                    st.rerun()
+                except Exception as ex:
+                    st.error(f"Error saving: {ex}")
+
+    # --------------------------------------------------------------------------
+    # ✅ CONDITION: IF CONTACTABLE == YES -> Retention Status Options (Picture 3 & 4)
+    # --------------------------------------------------------------------------
+    else:
+        st.markdown("<div style='margin-top: 14px;'></div>", unsafe_allow_html=True)
+
+        col_q1, col_q2, col_q3 = st.columns(3)
+
+        with col_q1:
+            st.markdown('<div class="question-pill-header">Assessment Given?</div>', unsafe_allow_html=True)
+            def_ass_val = row_preset.get("assessment_given", current_student["assessment_given"])
+            def_ass_idx = get_tri_option_index(def_ass_val, default="YES")
+            f_assessment = st.radio(
+                "Assessment Given?",
+                PLACEMENT_TRI_STATE_OPTIONS,
+                index=def_ass_idx,
+                horizontal=False,
+                label_visibility="collapsed",
+                key=f"plc_rad_ass_{current_student['row_num']}"
+            )
+
+        with col_q2:
+            st.markdown('<div class="question-pill-header">Got Certificate?</div>', unsafe_allow_html=True)
+            def_cert_val = row_preset.get("got_certificate", current_student["got_certificate"])
+            def_cert_idx = get_tri_option_index(def_cert_val, default="YES")
+            f_certificate = st.radio(
+                "Got Certificate?",
+                PLACEMENT_TRI_STATE_OPTIONS,
+                index=def_cert_idx,
+                horizontal=False,
+                label_visibility="collapsed",
+                key=f"plc_rad_cert_{current_student['row_num']}"
+            )
+
+        with col_q3:
+            st.markdown('<div class="question-pill-header">Got This Job From Anudip?</div>', unsafe_allow_html=True)
+            def_job_val = row_preset.get("got_job_from_anudip", current_student["got_job_from_anudip"])
+            def_got_job_idx = get_tri_option_index(def_job_val, default="YES")
+            f_got_job = st.radio(
+                "Got This Job From Anudip?",
+                PLACEMENT_TRI_STATE_OPTIONS,
+                index=def_got_job_idx,
+                horizontal=False,
+                label_visibility="collapsed",
+                key=f"plc_rad_job_{current_student['row_num']}"
+            )
+
+        st.markdown("<hr style='margin: 18px 0;'>", unsafe_allow_html=True)
+
+        # RETENTION STATUS (SPECIFIED EXACT 6 OPTIONS FOR CONTACTABLE == YES)
+        st.markdown("""
+            <div style="font-weight: 800; color: #0f4c81; font-size: 1.08rem; margin-bottom: 8px;">
+                💼 Retention & Employment Status
+            </div>
+        """, unsafe_allow_html=True)
+
+        existing_ret = row_preset.get("retention_status", current_student["retention_status"]).strip()
+        def_ret_idx = 0
+        if existing_ret in PLACEMENT_RETENTION_OPTIONS_YES:
+            def_ret_idx = PLACEMENT_RETENTION_OPTIONS_YES.index(existing_ret)
+
+        f_retention = st.selectbox(
+            "5. Retention Status",
+            PLACEMENT_RETENTION_OPTIONS_YES,
+            index=def_ret_idx,
+            key=f"plc_sel_ret_{current_student['row_num']}"
+        )
+
+        has_company_details = f_retention in [
+            "Working in same job",
+            "Working in different job",
+            "Left_The_Job",
+            "Will joined after some days"
+        ]
+
+        if f_retention == "Working in same job":
+            st.markdown("""
+                <div style="background: #f0fdf4; border: 1.5px solid #86efac; border-left: 5px solid #16a34a; padding: 10px 14px; border-radius: 8px; margin: 10px 0; color: #166534; font-size: 0.92rem; font-weight: 700;">
+                    💼 Working in Same Job: Company details auto-filled from Placement Profile (Editable if needed):
+                </div>
+            """, unsafe_allow_html=True)
+
+            c_emp1, c_emp2, c_emp3 = st.columns(3)
+            with c_emp1:
+                def_months_idx = 2
+                existing_m = row_preset.get("months", current_student["how_many_months"])
+                if existing_m in PLACEMENT_MONTHS_OPTIONS:
+                    def_months_idx = PLACEMENT_MONTHS_OPTIONS.index(existing_m)
+                f_months = st.selectbox(
+                    "6. How Many Months Working?",
+                    PLACEMENT_MONTHS_OPTIONS,
+                    index=def_months_idx,
+                    key=f"plc_sel_months_{current_student['row_num']}"
+                )
+
+            with c_emp2:
+                def_comp = row_preset.get("company", current_student["current_company"] or current_student["company_name"])
+                f_company = st.text_input(
+                    "7. Current Company Name (Auto-filled)",
+                    value=def_comp,
+                    key=f"plc_txt_comp_{current_student['row_num']}"
+                )
+
+            with c_emp3:
+                def_sal = row_preset.get("salary", current_student["current_salary"] or current_student["salary"])
+                f_salary = st.text_input(
+                    "8. Current Salary / Month (Auto-filled)",
+                    value=str(def_sal),
+                    key=f"plc_txt_sal_{current_student['row_num']}"
+                )
+
+            c_emp4, c_emp5, c_emp6 = st.columns(3)
+            with c_emp4:
+                def_desig = row_preset.get("designation", current_student["current_designation"] or current_student["designation"])
+                f_designation = st.text_input(
+                    "9. Current Designation (Auto-filled)",
+                    value=def_desig,
+                    key=f"plc_txt_desig_{current_student['row_num']}"
+                )
+
+            with c_emp5:
+                def_doj = row_preset.get("doj", parse_date_safe(current_student["current_doj"]) or parse_date_safe(current_student["doj"]) or date.today())
+                f_doj = st.date_input(
+                    "10. DOJ (Current Job - Auto-filled)",
+                    value=def_doj,
+                    key=f"plc_date_doj_{current_student['row_num']}"
+                )
+
+            with c_emp6:
+                def_further_val = row_preset.get("need_further_job", current_student["need_further_job"])
+                def_further_idx = get_tri_option_index(def_further_val, default="NO")
+                f_further_job = st.radio(
+                    "11. Need Any Further Job?",
+                    PLACEMENT_TRI_STATE_OPTIONS,
+                    index=def_further_idx,
+                    horizontal=True,
+                    key=f"plc_rad_further_{current_student['row_num']}"
+                )
+
+            f_left_remarks = "N/A - Currently Working"
+            f_not_joined_remarks = "N/A"
+
+        elif f_retention == "Left_The_Job":
+            st.markdown("""
+                <div style="background: #fef2f2; border: 1.5px solid #fecaca; border-left: 5px solid #ef4444; padding: 10px 14px; border-radius: 8px; margin: 10px 0; color: #991b1b; font-size: 0.92rem; font-weight: 700;">
+                    🚪 Left The Job: Placed company details auto-filled below. <span style="background: #ef4444; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.82rem; margin-left: 6px;">MANDATORY</span> <b>'How Many Months Working' must be filled to submit.</b>
+                </div>
+            """, unsafe_allow_html=True)
+
+            c_lj1, c_lj2, c_lj3 = st.columns(3)
+            with c_lj1:
+                def_months = row_preset.get("months", current_student["how_many_months"]).strip()
+                f_months = st.text_input(
+                    "6. How Many Months Working * (Mandatory)",
+                    value=def_months,
+                    placeholder="Type months worked (e.g. 3 Months, 6 Months)...",
+                    key=f"plc_txt_months_{current_student['row_num']}",
+                    help="Mandatory: You must type how many months the student worked before leaving."
+                )
+                if not f_months.strip():
+                    st.markdown("<small style='color: #dc2626; font-weight: 700;'>🚨 Mandatory: Must type something to submit!</small>", unsafe_allow_html=True)
+
+            with c_lj2:
+                def_comp = row_preset.get("company", current_student["current_company"] or current_student["company_name"])
+                f_company = st.text_input(
+                    "7. Placed Company Left (Auto-filled)",
+                    value=def_comp,
+                    key=f"plc_txt_comp_{current_student['row_num']}"
+                )
+            with c_lj3:
+                def_sal = row_preset.get("salary", current_student["current_salary"] or current_student["salary"])
+                f_salary = st.text_input(
+                    "8. Last Salary / Month (Auto-filled)",
+                    value=str(def_sal),
+                    key=f"plc_txt_sal_{current_student['row_num']}"
+                )
+
+            c_lj4, c_lj5, c_lj6 = st.columns(3)
+            with c_lj4:
+                def_desig = row_preset.get("designation", current_student["current_designation"] or current_student["designation"])
+                f_designation = st.text_input(
+                    "9. Designation Left (Auto-filled)",
+                    value=def_desig,
+                    key=f"plc_txt_desig_{current_student['row_num']}"
+                )
+            with c_lj5:
+                def_doj = row_preset.get("doj", parse_date_safe(current_student["current_doj"]) or parse_date_safe(current_student["doj"]) or date.today())
+                f_doj = st.date_input(
+                    "10. Date of Joining (DOJ - Auto-filled)",
+                    value=def_doj,
+                    key=f"plc_date_doj_{current_student['row_num']}"
+                )
+            with c_lj6:
+                def_further_val = row_preset.get("need_further_job", current_student["need_further_job"])
+                def_further_idx = get_tri_option_index(def_further_val, default="YES")
+                f_further_job = st.radio(
+                    "11. Need Any Further Job?",
+                    PLACEMENT_TRI_STATE_OPTIONS,
+                    index=def_further_idx,
+                    horizontal=True,
+                    key=f"plc_rad_further_{current_student['row_num']}"
+                )
+
+            existing_left = row_preset.get("left_remarks", current_student["left_not_working_remarks"].strip())
+            def_left_idx = 0
+            if existing_left in PLACEMENT_LEFT_JOB_OPTIONS:
+                def_left_idx = PLACEMENT_LEFT_JOB_OPTIONS.index(existing_left)
+
+            f_left_remarks = st.selectbox(
+                "12. Left The Job Reason (Picture 4 Col 5)",
+                PLACEMENT_LEFT_JOB_OPTIONS,
+                index=def_left_idx,
+                key=f"plc_sel_left_rem_{current_student['row_num']}"
+            )
+            f_not_joined_remarks = "N/A"
+
+        elif f_retention == "Working in different job":
+            st.markdown("""
+                <div style="background: #eff6ff; border: 1.5px solid #bfdbfe; border-left: 5px solid #2563eb; padding: 10px 14px; border-radius: 8px; margin: 10px 0; color: #1e40af; font-size: 0.92rem; font-weight: 700;">
+                    🔄 Working in Different Job: Please update all new company details, designation, and salary below:
+                </div>
+            """, unsafe_allow_html=True)
+
+            c_emp1, c_emp2, c_emp3 = st.columns(3)
+            with c_emp1:
+                def_months_idx = 0
+                existing_m = row_preset.get("months", current_student["how_many_months"])
+                if existing_m in PLACEMENT_MONTHS_OPTIONS:
+                    def_months_idx = PLACEMENT_MONTHS_OPTIONS.index(existing_m)
+                f_months = st.selectbox(
+                    "6. How Many Months in New Job?",
+                    PLACEMENT_MONTHS_OPTIONS,
+                    index=def_months_idx,
+                    key=f"plc_sel_months_{current_student['row_num']}"
+                )
+
+            with c_emp2:
+                saved_comp = current_student["current_company"] if current_student["current_company"] != current_student["company_name"] else ""
+                def_comp = row_preset.get("company", saved_comp)
+                f_company = st.text_input(
+                    "7. New Company Name (Enter Updates)",
+                    value=def_comp,
+                    placeholder="Enter new employer name...",
+                    key=f"plc_txt_comp_{current_student['row_num']}"
+                )
+
+            with c_emp3:
+                saved_sal = current_student["current_salary"] if current_student["current_salary"] != current_student["salary"] else ""
+                def_sal = row_preset.get("salary", saved_sal)
+                f_salary = st.text_input(
+                    "8. New Salary / Month (Enter Updates)",
+                    value=str(def_sal),
+                    placeholder="E.g. 15000",
+                    key=f"plc_txt_sal_{current_student['row_num']}"
+                )
+
+            c_emp4, c_emp5, c_emp6 = st.columns(3)
+            with c_emp4:
+                saved_desig = current_student["current_designation"] if current_student["current_designation"] != current_student["designation"] else ""
+                def_desig = row_preset.get("designation", saved_desig)
+                f_designation = st.text_input(
+                    "9. New Designation (Enter Updates)",
+                    value=def_desig,
+                    placeholder="E.g. Associate / Executive",
+                    key=f"plc_txt_desig_{current_student['row_num']}"
+                )
+
+            with c_emp5:
+                def_doj = row_preset.get("doj", parse_date_safe(current_student["current_doj"]) or date.today())
+                f_doj = st.date_input(
+                    "10. DOJ (New Job)",
+                    value=def_doj,
+                    key=f"plc_date_doj_{current_student['row_num']}"
+                )
+
+            with c_emp6:
+                def_further_val = row_preset.get("need_further_job", current_student["need_further_job"])
+                def_further_idx = get_tri_option_index(def_further_val, default="NO")
+                f_further_job = st.radio(
+                    "11. Need Any Further Job?",
+                    PLACEMENT_TRI_STATE_OPTIONS,
+                    index=def_further_idx,
+                    horizontal=True,
+                    key=f"plc_rad_further_{current_student['row_num']}"
+                )
+
+            f_left_remarks = "N/A - Working in different job"
+            f_not_joined_remarks = "N/A"
+
+        elif f_retention == "Will joined after some days":
+            st.markdown("""
+                <div style="background: #fdf4ff; border: 1.5px solid #f0abfc; border-left: 5px solid #c026d3; padding: 10px 14px; border-radius: 8px; margin: 10px 0; color: #86198f; font-size: 0.92rem; font-weight: 700;">
+                    📅 Will Join Upcoming Job: Enter or confirm joining company and onboarding details below:
+                </div>
+            """, unsafe_allow_html=True)
+
+            c_wj1, c_wj2, c_wj3 = st.columns(3)
+            with c_wj1:
+                def_comp = row_preset.get("company", current_student["current_company"] or current_student["company_name"])
+                f_company = st.text_input(
+                    "Joining Company Name",
+                    value=def_comp,
+                    placeholder="Enter joining company...",
+                    key=f"plc_txt_comp_{current_student['row_num']}"
+                )
+
+            with c_wj2:
+                def_sal = row_preset.get("salary", current_student["current_salary"] or current_student["salary"])
+                f_salary = st.text_input(
+                    "Offered Salary / Month",
+                    value=str(def_sal),
+                    placeholder="E.g. 12000",
+                    key=f"plc_txt_sal_{current_student['row_num']}"
+                )
+
+            with c_wj3:
+                def_desig = row_preset.get("designation", current_student["current_designation"] or current_student["designation"])
+                f_designation = st.text_input(
+                    "Offered Designation",
+                    value=def_desig,
+                    placeholder="E.g. Trainee / Executive",
+                    key=f"plc_txt_desig_{current_student['row_num']}"
+                )
+
+            c_wj4, c_wj5, c_wj6 = st.columns(3)
+            with c_wj4:
+                def_doj = row_preset.get("doj", parse_date_safe(current_student["current_doj"]) or date.today())
+                f_doj = st.date_input(
+                    "Expected Date of Joining (DOJ)",
+                    value=def_doj,
+                    key=f"plc_date_doj_{current_student['row_num']}"
+                )
+
+            with c_wj5:
+                existing_left = row_preset.get("left_remarks", current_student["left_not_working_remarks"].strip())
+                def_wj_idx = 0
+                if existing_left in PLACEMENT_WILL_JOIN_OPTIONS:
+                    def_wj_idx = PLACEMENT_WILL_JOIN_OPTIONS.index(existing_left)
+
+                f_left_remarks = st.selectbox(
+                    "Joining Status / Reason",
+                    PLACEMENT_WILL_JOIN_OPTIONS,
+                    index=def_wj_idx,
+                    key=f"plc_sel_wj_rem_{current_student['row_num']}"
+                )
+
+            with c_wj6:
+                def_further_val = row_preset.get("need_further_job", current_student["need_further_job"])
+                def_further_idx = get_tri_option_index(def_further_val, default="NO")
+                f_further_job = st.radio(
+                    "11. Need Any Further Job?",
+                    PLACEMENT_TRI_STATE_OPTIONS,
+                    index=def_further_idx,
+                    horizontal=True,
+                    key=f"plc_rad_further_{current_student['row_num']}"
+                )
+
+            f_months = ""
+            f_not_joined_remarks = "N/A"
+
+        elif f_retention == "Not_working_at_all":
+            st.markdown("""
+                <div style="background: #fff7ed; border: 1px solid #fed7aa; padding: 10px 14px; border-radius: 8px; margin: 10px 0; color: #9a3412; font-size: 0.92rem; font-weight: 700;">
+                    ⚠️ Student Not Working At All — Select Reasons from Picture 4:
+                </div>
+            """, unsafe_allow_html=True)
+
+            c_nw1, c_nw2, c_nw3 = st.columns([1.4, 1.4, 1.1])
+            with c_nw1:
+                existing_left = row_preset.get("left_remarks", current_student["left_not_working_remarks"].strip())
+                def_nw_idx = 0
+                if existing_left in PLACEMENT_NOT_WORKING_OPTIONS:
+                    def_nw_idx = PLACEMENT_NOT_WORKING_OPTIONS.index(existing_left)
+
+                f_left_remarks = st.selectbox(
+                    "12. Not Working Reason (Picture 4 Col 1)",
+                    PLACEMENT_NOT_WORKING_OPTIONS,
+                    index=def_nw_idx,
+                    key=f"plc_sel_nw_rem_{current_student['row_num']}"
+                )
+
+            with c_nw2:
+                if f_left_remarks == "Did_not_joined_job_due_to_personal_issue":
+                    sub_options = PLACEMENT_NOT_JOINED_PERSONAL_OPTIONS
+                    sub_lbl = "13. Personal Issue Detail (Picture 4 Col 3)"
+                elif f_left_remarks == "Did_not_joined_job_due_to_profile_issue":
+                    sub_options = PLACEMENT_NOT_JOINED_PROFILE_OPTIONS
+                    sub_lbl = "13. Profile Issue Detail (Picture 4 Col 4)"
+                else:
+                    sub_options = ["N/A"]
+                    sub_lbl = "13. Not Joined Detail"
+
+                existing_nj = row_preset.get("not_joined_remarks", current_student["not_joined_remarks"].strip())
+                def_nj_idx = 0
+                if existing_nj in sub_options:
+                    def_nj_idx = sub_options.index(existing_nj)
+
+                f_not_joined_remarks = st.selectbox(
+                    sub_lbl,
+                    sub_options,
+                    index=def_nj_idx,
+                    key=f"plc_sel_sub_rem_{current_student['row_num']}"
+                )
+
+            with c_nw3:
+                def_further_val = row_preset.get("need_further_job", current_student["need_further_job"])
+                def_further_idx = get_tri_option_index(def_further_val, default="YES")
+                f_further_job = st.radio(
+                    "11. Need Any Further Job?",
+                    PLACEMENT_TRI_STATE_OPTIONS,
+                    index=def_further_idx,
+                    horizontal=True,
+                    key=f"plc_rad_further_{current_student['row_num']}"
+                )
+
+            f_company = ""
+            f_salary = ""
+            f_designation = ""
+            f_doj = ""
+            f_months = ""
+
+        else:
+            st.info("ℹ️ Student confirmed name but declined to disclose current employment or salary.")
+            c_cn1, _ = st.columns([1.8, 1.4])
+            with c_cn1:
+                def_further_val = row_preset.get("need_further_job", current_student["need_further_job"])
+                def_further_idx = get_tri_option_index(def_further_val, default="Don't Share")
+                f_further_job = st.radio(
+                    "11. Need Any Further Job?",
+                    PLACEMENT_TRI_STATE_OPTIONS,
+                    index=def_further_idx,
+                    horizontal=True,
+                    key=f"plc_rad_further_{current_student['row_num']}"
+                )
+            f_left_remarks = "Confirmed Name But Didn't Share Any Information."
+            f_not_joined_remarks = "N/A"
+            f_company = ""
+            f_salary = ""
+            f_designation = ""
+            f_doj = ""
+            f_months = ""
+
+        st.markdown("<hr style='margin: 16px 0;'>", unsafe_allow_html=True)
+        st.markdown("<div style='font-weight: 700; color: #0f4c81; font-size: 1.02rem; margin-bottom: 8px;'>⭐ Feedback, NPS & SPOC Notes</div>", unsafe_allow_html=True)
+
+        c_fb1, c_fb2, c_fb3 = st.columns(3)
+        with c_fb1:
+            def_nps_idx = 0
+            existing_nps = str(row_preset.get("nps", current_student["nps"])).strip()
+            if existing_nps in PLACEMENT_NPS_OPTIONS:
+                def_nps_idx = PLACEMENT_NPS_OPTIONS.index(existing_nps)
+            f_nps = st.selectbox(
+                "14. Net Promoter Score (NPS)",
+                PLACEMENT_NPS_OPTIONS,
+                index=def_nps_idx,
+                key=f"plc_sel_nps_{current_student['row_num']}"
+            )
+
+        with c_fb2:
+            def_sat_idx = 0
+            existing_sat = row_preset.get("satisfied", current_student["satisfied_with_conversation"]).strip()
+            if existing_sat in PLACEMENT_SATISFIED_OPTIONS:
+                def_sat_idx = PLACEMENT_SATISFIED_OPTIONS.index(existing_sat)
+            f_satisfied = st.selectbox(
+                "15. Satisfied With Conversation?",
+                PLACEMENT_SATISFIED_OPTIONS,
+                index=def_sat_idx,
+                key=f"plc_sel_sat_{current_student['row_num']}"
+            )
+
+        with c_fb3:
+            st.session_state[f"plc_date_vdate_{current_student['row_num']}"] = date.today()
+            f_vdate = st.date_input(
+                "16. Verification Date",
+                value=date.today(),
+                disabled=True,
+                key=f"plc_date_vdate_{current_student['row_num']}"
+            )
+
+        f_remarks_2 = st.text_area(
+            "17. Remarks 2 (Additional SPOC Notes)",
+            value=row_preset.get("remarks_2", current_student["remarks_2"]),
+            height=70,
+            key=f"plc_ta_rem2_{current_student['row_num']}",
+            placeholder="Type any specific comments or call observation..."
+        )
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        btn_submit_label = f"💾 Update & Insert Placement Verification (Row #{current_student['row_num']})" if (is_edit_mode or is_already_verified) else "💾 Submit Placement Verification"
+        if st.button(btn_submit_label, type="primary", use_container_width=True, key=f"plc_btn_submit_{current_student['row_num']}"):
+            is_retention_left = str(f_retention).strip().lower().replace("_", " ") == "left the job"
+            if is_retention_left and not str(f_months).strip():
+                st.error("🚨 **Submission Blocked:** **'How Many Months Working' is mandatory** when Retention Status is **'Left The Job'**! You must type something in this field before submitting.")
+            else:
+                with st.spinner("⚡ High Speed Sync to Google Sheets..."):
+                    payload = [
+                        "Yes",                                                      # Q: Contactable
+                        f_assessment,                                               # R: Assessment Given
+                        f_certificate,                                              # S: Got Certificate
+                        f_got_job,                                                  # T: Have_You_Got_This_Job_From_Anudip
+                        f_retention,                                                # U: Retention Status
+                        str(f_months).strip() if (f_retention in ["Working in same job", "Working in different job"] or is_retention_left) else "",  # V: How Many Months Working
+                        f_company if has_company_details else "",                   # W: Current Company Name
+                        str(f_salary) if has_company_details else "",               # X: Current Salary
+                        f_designation if has_company_details else "",               # Y: Current Designation
+                        str(f_doj) if has_company_details else "",                  # Z: DOJ
+                        f_further_job,                                              # AA: Need any further job
+                        str(f_nps),                                                 # AB: Net Promoter Score
+                        str(date.today()),                                          # AC: Verification Date
+                        f_left_remarks,                                             # AD: Left The Job /Not Working/Not - Contactable Remarks
+                        f_not_joined_remarks,                                       # AE: Not Joined Remarks
+                        f_satisfied,                                                # AF: Satisfied With Conversation
+                        f_remarks_2.strip()                                         # AG: Remarks 2
+                    ]
+
+                    try:
+                        p_cid = current_student.get("call_id") or ("1153" if current_student["row_num"] <= 1154 else "1000")
+                        p_concat = current_student.get("concat") or f"{current_student.get('called_by', '')}{p_cid}"
+                        current_student["call_status"] = "Done"
+                        current_student["concat"] = p_concat
+
+                        # 1. Update in-memory session rows immediately (Sub-millisecond)
+                        update_in_memory_placement_row(current_student['row_num'], payload, call_status="Done", call_id=p_cid, concat=p_concat)
+
+                        # 2. Asynchronous background sync to Google Sheets (Zero UI wait)
+                        dispatch_placement_sync(placement_ws, current_student['row_num'], payload, call_status="Done", call_id=p_cid, concat=p_concat)
+
+                        # 3. Update session live history (deduplicated by row_num)
+                        st.session_state.placement_live_history = [
+                            item for item in st.session_state.placement_live_history if item[0] != current_student['row_num']
+                        ]
+                        st.session_state.placement_live_history.insert(0, (current_student['row_num'], list(payload)))
+                        st.session_state.placement_live_history = st.session_state.placement_live_history[:20]
+                        st.session_state.pop("placement_editing_row", None)
+                        st.session_state.pop("placement_active_recall", None)
+
+                        # 4. Instant UI Toast
+                        st.toast(f"✅ Target #{current_q_idx + 1} ({current_student['student_name']}) saved successfully in Google Sheets!", icon="🎯")
+
+                        if is_no_mode:
+                            if current_q_idx >= total_assigned_queue - 1:
+                                st.session_state.placement_no_queue_index = max(0, total_assigned_queue - 2)
+                            else:
+                                st.session_state.placement_no_queue_index = current_q_idx
+                        else:
+                            if current_q_idx + 1 < total_assigned_queue:
+                                st.session_state.placement_queue_index = current_q_idx + 1
+                                next_s = active_queue_students[current_q_idx + 1]
+                                save_placement_progress(current_spoc, current_q_idx + 1, next_s["contact_number"], active_call_index=st.session_state.get("placement_active_call_index", 0))
+
+                        time.sleep(0.1)
+                        st.rerun()
+                    except Exception as ex:
+                        st.error(f"Error saving: {ex}")
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # ==========================================================================
+    # 📋 SECTION: SPOC WISE LATEST VERIFIED CALLS (Z-A)
+    # ==========================================================================
+    st.markdown("""
+        <div class="profile-card-enhanced" style="margin-top: 1.2rem; border-top: 4px solid #1a73e8;">
+            <div style="font-weight: 800; color: #0f4c81; font-size: 1.15rem; margin-bottom: 0.8rem;">
+                📋 Recent Verified Calls ({spoc_name})
+            </div>
+    """.replace("{spoc_name}", display_scope_name), unsafe_allow_html=True)
+
+    called_records = []
+    # Deduplicate live history in case of earlier duplicate session entries
+    seen_plc_hist = set()
+    unique_plc_hist = []
+    for r_num, pld in st.session_state.placement_live_history:
+        if r_num not in seen_plc_hist:
+            seen_plc_hist.add(r_num)
+            unique_plc_hist.append((r_num, pld))
+    st.session_state.placement_live_history = unique_plc_hist
+    live_map = {r_num: r_data for r_num, r_data in st.session_state.placement_live_history}
+
+    for s in active_queue_students:
+        r_num = s["row_num"]
+        if r_num in live_map:
+            l_data = live_map[r_num]
+            called_records.append({
+                "student_obj": s,
+                "target_num": s["queue_index"] + 1,
+                "row_num": r_num,
+                "student_name": s["student_name"],
+                "contact_number": s["contact_number"],
+                "company_name": s["company_name"],
+                "contactable": l_data[0] if len(l_data) > 0 else s["contactable"],
+                "assessment_given": l_data[1] if len(l_data) > 1 else s["assessment_given"],
+                "got_certificate": l_data[2] if len(l_data) > 2 else s["got_certificate"],
+                "got_job_from_anudip": l_data[3] if len(l_data) > 3 else s["got_job_from_anudip"],
+                "retention": l_data[4] if len(l_data) > 4 else s["retention_status"],
+                "months": l_data[5] if len(l_data) > 5 else s["how_many_months"],
+                "current_company": l_data[6] if len(l_data) > 6 else s["current_company"],
+                "current_salary": l_data[7] if len(l_data) > 7 else s["current_salary"],
+                "current_designation": l_data[8] if len(l_data) > 8 else s["current_designation"],
+                "current_doj": l_data[9] if len(l_data) > 9 else s["current_doj"],
+                "need_further_job": l_data[10] if len(l_data) > 10 else s["need_further_job"],
+                "nps": l_data[11] if len(l_data) > 11 else s["nps"],
+                "verification_date": l_data[12] if len(l_data) > 12 else s["verification_date"],
+                "remarks": l_data[13] if len(l_data) > 13 else s["left_not_working_remarks"],
+                "not_joined_remarks": l_data[14] if len(l_data) > 14 else s["not_joined_remarks"],
+                "satisfied": l_data[15] if len(l_data) > 15 else s["satisfied_with_conversation"],
+                "remarks_2": l_data[16] if len(l_data) > 16 else s["remarks_2"]
+            })
+        elif s["contactable"]:
+            called_records.append({
+                "student_obj": s,
+                "target_num": s["queue_index"] + 1,
+                "row_num": r_num,
+                "student_name": s["student_name"],
+                "contact_number": s["contact_number"],
+                "company_name": s["company_name"],
+                "contactable": s["contactable"],
+                "assessment_given": s["assessment_given"],
+                "got_certificate": s["got_certificate"],
+                "got_job_from_anudip": s["got_job_from_anudip"],
+                "retention": s["retention_status"],
+                "months": s["how_many_months"],
+                "current_company": s["current_company"],
+                "current_salary": s["current_salary"],
+                "current_designation": s["current_designation"],
+                "current_doj": s["current_doj"],
+                "need_further_job": s["need_further_job"],
+                "nps": s["nps"],
+                "verification_date": s["verification_date"],
+                "remarks": s["left_not_working_remarks"],
+                "not_joined_remarks": s["not_joined_remarks"],
+                "satisfied": s["satisfied_with_conversation"],
+                "remarks_2": s["remarks_2"]
+            })
+
+    latest_5 = list(reversed(called_records))[:5]
+    if not latest_5:
+        st.info("No verified calls completed yet in this session.")
+    else:
+        for p_idx, it in enumerate(latest_5):
+            c_r1, c_r2, c_r3, c_r4 = st.columns([1, 3, 3, 1.2])
+            with c_r1:
+                st.markdown(f"**Target #{it['target_num']}**")
+            with c_r2:
+                badge = "🟢 Contacted (Yes)" if it["contactable"].lower() == "yes" else "🔴 Not Contactable (No)"
+                st.markdown(f"**{it['student_name']}** (`{it['contact_number']}`)<br><small>{badge}</small>", unsafe_allow_html=True)
+            with c_r3:
+                st.markdown(f"*{it['company_name']}*<br><small style='color: #64748b;'>{it['retention'] or it['remarks'] or 'Verified'}</small>", unsafe_allow_html=True)
+            with c_r4:
+                # ✏️ Edit Button: Loads previous verification form so user can view, update and insert!
+                if st.button("✏️ Edit", key=f"plc_edit_{p_idx}_{it['row_num']}", use_container_width=True):
+                    # Locate student index in active_queue_students
+                    target_idx = None
+                    for a_i, a_s in enumerate(active_queue_students):
+                        if a_s["row_num"] == it["row_num"]:
+                            target_idx = a_i
+                            break
+
+                    if target_idx is not None:
+                        st.session_state.placement_queue_index = target_idx
+                    else:
+                        st.session_state.plc_perf_view = "🌟 All Team Combined (Portal Total)"
+                        st.session_state.plc_perf_view_selector_box = "🌟 All Team Combined (Portal Total)"
+                        global_idx = 0
+                        for g_i, g_s in enumerate(all_placement_students):
+                            if g_s["row_num"] == it["row_num"]:
+                                global_idx = g_i
+                                break
+                        st.session_state.placement_queue_index = global_idx
+
+                    row_k = it["row_num"]
+                    # Store ALL previously verified values into preset for this row!
+                    st.session_state[f"plc_preset_{row_k}"] = {
+                        "contactable": "Yes" if str(it["contactable"]).strip().lower() == "yes" else "No",
+                        "assessment_given": normalize_tri_val(it.get("assessment_given"), "YES"),
+                        "got_certificate": normalize_tri_val(it.get("got_certificate"), "YES"),
+                        "got_job_from_anudip": normalize_tri_val(it.get("got_job_from_anudip"), "YES"),
+                        "retention_status": it["retention"] or "Working in same job",
+                        "months": it.get("months", "") or ("3 Months" if it.get("retention") in ["Working in same job", "Working in different job"] else ""),
+                        "company": it.get("current_company") or it["company_name"],
+                        "salary": it.get("current_salary") or it["student_obj"].get("salary", ""),
+                        "designation": it.get("current_designation") or it["student_obj"].get("designation", ""),
+                        "doj": parse_date_safe(it.get("current_doj")) or parse_date_safe(it["student_obj"].get("doj")) or date.today(),
+                        "need_further_job": normalize_tri_val(it.get("need_further_job"), "NO"),
+                        "nps": str(it.get("nps", "10")),
+                        "satisfied": it.get("satisfied", "Yes"),
+                        "verification_date": date.today(),
+                        "left_remarks": it["remarks"],
+                        "not_joined_remarks": it.get("not_joined_remarks", "N/A"),
+                        "nocont_reason": it["remarks"] if str(it["contactable"]).lower() == "no" else "",
+                        "remarks_2": it.get("remarks_2", "")
+                    }
+
+                    # Clear old widget state keys for this row so Streamlit forces re-read from preset
+                    for k in list(st.session_state.keys()):
+                        if f"_{row_k}" in k and k.startswith("plc_"):
+                            st.session_state.pop(k, None)
+
+                    st.session_state.placement_editing_row = it["row_num"]
+                    save_placement_progress(current_spoc, st.session_state.placement_queue_index, it["contact_number"], active_call_index=st.session_state.get("placement_active_call_index", 0))
+                    st.toast(f"Loaded previous record for {it['student_name']}! Ready for update & insert.", icon="✏️")
+                    st.rerun()
+
+    st.markdown('</div>', unsafe_allow_html=True)
