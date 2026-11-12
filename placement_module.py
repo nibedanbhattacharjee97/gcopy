@@ -445,6 +445,12 @@ def fetch_placement_master_data(_placement_ws):
     except Exception:
         return []
 
+def _clear_placement_master_data():
+    """Clears cached placement master rows from session state"""
+    st.session_state.pop("placement_master_rows", None)
+
+fetch_placement_master_data.clear = _clear_placement_master_data
+
 def parse_all_placement_students(all_rows):
     """Parses all student rows from the Google Sheet regardless of SPOC"""
     if len(all_rows) <= 1:
@@ -2297,7 +2303,8 @@ def render_placement_dashboard(placement_ws, current_spoc, is_admin=False):
     # 5. 🔄 Refresh DB Button
     if c_refresh.button("🔄 Refresh DB", use_container_width=True):
         st.session_state.pop("placement_master_rows", None)
-        fetch_placement_master_data.clear()
+        if hasattr(fetch_placement_master_data, "clear"):
+            fetch_placement_master_data.clear()
         st.cache_data.clear()
         st.toast("Database cache refreshed from Google Sheets!", icon="🔄")
         st.rerun()
