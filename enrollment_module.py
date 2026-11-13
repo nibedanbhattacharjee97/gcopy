@@ -2752,7 +2752,7 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
                 def_cs_idx = 0 if def_cs_val == "Yes" else 1
                 f_class_started = st.radio(
                     "Class started (Yes/No)",
-                    ["Yes", "No","Dont Share"],
+                    ["Yes", "No","Dont Share","Dont Know"],
                     index=def_cs_idx,
                     horizontal=True,
                     label_visibility="collapsed",
@@ -2788,7 +2788,7 @@ def render_enrollment_dashboard(enrollment_ws, current_spoc, is_admin=False):
                 def_ref_idx = 0 if def_ref_val == "N/A" else (1 if def_ref_val == "No" else 2)
                 f_referral_ok = st.radio(
                     "Referral Person Name(Yes/No)",
-                    ["Yes", "No", "N/A"],
+                    ["Yes", "No", "N/A", "Dont Know"],
                     index=def_ref_idx,
                     horizontal=True,
                     label_visibility="collapsed",
