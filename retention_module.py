@@ -76,6 +76,7 @@ RETENTION_REASON_LEFT_OPTIONS = [
     "Contract ended / Layoff",
     "Company closed",
     "Did not like job profile",
+    "own Business",
     "Other (Mention in remarks)"
 ]
 
