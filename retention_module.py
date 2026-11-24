@@ -259,7 +259,7 @@ def parse_all_retention_students(all_rows):
     c_salary       = find_col(["salary"], default_idx=12)
     c_doj          = find_col(["date of joining"], default_idx=13)
     c_round        = find_col(["calling round"], default_idx=14)
-    c_exiting_nps  = find_col(["exiting nps", "existing nps"], default_idx=15)
+    c_exiting_nps  = find_col(["exiting nps", "existing nps", "exit nps", "exiting_nps"], default_idx=15)
 
     c_contactable  = find_col(["contactable"], default_idx=16)
     c_outcome      = find_col(["verification outcome"], default_idx=17)
@@ -514,9 +514,9 @@ def render_retention_fresh_call_list(fresh_stats, current_spoc, all_retention_st
                 key=f"ret_dl_txt_{f_spoc}_{key_prefix}"
             )
         with c_dl2:
-            csv_lines = ["Target_Num,Phone_Number,Student_Name,Placed_Company,Designation,Salary"]
+            csv_lines = ["Target_Num,Phone_Number,Student_Name,Placed_Company,Designation,Salary,Exiting_NPS"]
             for item in fresh_items:
-                csv_lines.append(f"Target #{item.get('queue_index', 0)+1},{item['contact_number']},{item['student_name']},{item.get('placed_company','')},{item.get('designation','')},{item.get('salary','')}")
+                csv_lines.append(f"Target #{item.get('queue_index', 0)+1},{item['contact_number']},{item['student_name']},{item.get('placed_company','')},{item.get('designation','')},{item.get('salary','')},{item.get('exiting_nps','')}")
             st.download_button(
                 label="📊 Download CSV Details",
                 data="\n".join(csv_lines),
@@ -628,9 +628,9 @@ def render_retention_not_contactable_list(fresh_stats, current_spoc, all_retenti
                 key=f"ret_dl_no_txt_{f_spoc}_{key_prefix}"
             )
         with c_dl2:
-            csv_lines = ["Target_Num,Phone_Number,Student_Name,Placed_Company,Designation,Reason"]
+            csv_lines = ["Target_Num,Phone_Number,Student_Name,Placed_Company,Designation,Reason,Exiting_NPS"]
             for item in no_items:
-                csv_lines.append(f"Target #{item.get('queue_index', 0)+1},{item['contact_number']},{item['student_name']},{item.get('placed_company','')},{item.get('designation','')},{item.get('remarks','')}")
+                csv_lines.append(f"Target #{item.get('queue_index', 0)+1},{item['contact_number']},{item['student_name']},{item.get('placed_company','')},{item.get('designation','')},{item.get('remarks','')},{item.get('exiting_nps','')}")
             st.download_button(
                 label="📊 Download CSV Details",
                 data="\n".join(csv_lines),
@@ -1272,6 +1272,11 @@ def render_retention_dashboard(retention_ws, current_spoc, is_admin=False):
     wa_url = f"https://wa.me/91{p_phone}" if p_phone else "#"
     call_url = f"tel:{p_phone}" if p_phone else "#"
     assigned_display = curr_student.get("called_by", "Unassigned")
+    ex_nps = str(curr_student.get("exiting_nps", "")).strip()
+    if ex_nps.lower() in ["nan", "none", "null", ""]:
+        ex_nps_display = "N/A"
+    else:
+        ex_nps_display = ex_nps
 
     st.markdown(f"""
         <div style="background: white; border-radius: 12px; border: 1.5px solid #e2e8f0; padding: 18px; margin: 12px 0; box-shadow: 0 2px 8px rgba(0,0,0,0.04);">
@@ -1297,6 +1302,7 @@ def render_retention_dashboard(retention_ws, current_spoc, is_admin=False):
                 <div>🎓 <b>Course:</b> {curr_student['course']}</div>
                 <div>🤝 <b>Donor:</b> {curr_student['donor_name']}</div>
                 <div>📞 <b>Alt Phone:</b> {alt_phone or 'N/A'}</div>
+                <div>⭐ <b>Exiting NPS:</b> <span style="color: #047857; font-weight: 700;">{ex_nps_display}</span></div>
             </div>
         </div>
     """, unsafe_allow_html=True)
