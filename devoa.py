@@ -20,8 +20,10 @@ warnings.filterwarnings("ignore", message=".*st\\.iframe.*")
 import importlib
 import placement_module
 import enrollment_module
+import retention_module
 importlib.reload(placement_module)
 importlib.reload(enrollment_module)
+importlib.reload(retention_module)
 
 from placement_module import (
     render_placement_dashboard,
@@ -34,6 +36,12 @@ from enrollment_module import (
     fetch_enrollment_master_data,
     get_enrollment_students_for_spoc,
     get_saved_enrollment_index
+)
+from retention_module import (
+    render_retention_dashboard,
+    fetch_retention_master_data,
+    get_retention_students_for_spoc,
+    get_saved_retention_index
 )
 
 # ==============================================================================
@@ -357,6 +365,20 @@ def get_sheets_connection():
                             pass
                 except Exception:
                     enrollment_ws = None
+
+        # Open dedicated Retention Verification Sheet
+        retention_ws = None
+        try:
+            retention_sh = gc.open_by_key("11mQnQfQmRBWUglDMQ8O5pUkz1jv4FwGAEw7crPXi4Qc")
+            try:
+                retention_ws = retention_sh.worksheet("retention_verification")
+            except Exception:
+                retention_ws = retention_sh.sheet1
+        except Exception:
+            try:
+                retention_ws = gc.open("retention_verification").sheet1
+            except Exception:
+                retention_ws = None
         
         # Synchronize Test headers if needed
         if master_ws:
@@ -375,7 +397,8 @@ def get_sheets_connection():
         "lookup": lookup_ws,
         "allocation": alloc_ws,
         "placement": placement_ws,
-        "enrollment": enrollment_ws
+        "enrollment": enrollment_ws,
+        "retention": retention_ws
     }
 
 sheets = get_sheets_connection()
@@ -1298,76 +1321,83 @@ if not st.session_state.logged_in:
         )
         st.session_state.call_type = selected_call_type
 
-        if selected_call_type in ["Retention"]:
-            st.info(f"ℹ️ **{selected_call_type} Call Module** is scheduled for upcoming rollout. Please select **Placement**, **Enrollment** or **Impact Assessment** to proceed.")
-
         tab_log, tab_reg = st.tabs(["🔐 Login", "🆕 Register"])
         with tab_log:
             u = st.text_input("SPOC Name", key="login_user")
             p = st.text_input("Password", type="password", key="login_pass")
             if st.button("Access System", use_container_width=True, type="primary"):
-                if selected_call_type in ["Retention"]:
-                    st.error(f"The {selected_call_type} Call Module is not yet available. Please select Placement, Enrollment, or Impact Assessment.")
-                else:
-                    auth_recs = fetch_auth_data()
-                    match = next((r for r in auth_recs if str(r.get("spoc_name")).strip().lower() == u.strip().lower()), None)
-                    if match and match.get("password") == hash_password(p):
-                        st.session_state.logged_in = True
-                        st.session_state.user = u.strip()
-                        st.session_state.call_type = selected_call_type
+                auth_recs = fetch_auth_data()
+                match = next((r for r in auth_recs if str(r.get("spoc_name")).strip().lower() == u.strip().lower()), None)
+                if match and match.get("password") == hash_password(p):
+                    st.session_state.logged_in = True
+                    st.session_state.user = u.strip()
+                    st.session_state.call_type = selected_call_type
 
-                        if selected_call_type == "Placement":
-                            all_plc_rows = fetch_placement_master_data(sheets.get("placement"))
-                            plc_students = get_placement_students_for_spoc(all_plc_rows, u)
-                            st.session_state.allocated_numbers = [s["contact_number"] for s in plc_students]
-                            saved_q, saved_act = get_saved_placement_index(u, plc_students)
-                            st.session_state.placement_queue_index = saved_q
-                            st.session_state.placement_active_call_index = saved_act
-                            if saved_q > 0 and saved_q < len(plc_students):
-                                st.session_state.show_placement_resume_banner = True
-                            else:
-                                st.session_state.show_placement_resume_banner = False
-                        elif selected_call_type == "Enrollment":
-                            all_enr_rows = fetch_enrollment_master_data(sheets.get("enrollment"))
-                            enr_students = get_enrollment_students_for_spoc(all_enr_rows, u)
-                            st.session_state.allocated_numbers = [s["contact_number"] for s in enr_students]
-                            saved_q, saved_act = get_saved_enrollment_index(u, enr_students)
-                            st.session_state.enrollment_queue_index = saved_q
-                            st.session_state.enrollment_active_call_index = saved_act
-                            if saved_q > 0 and saved_q < len(enr_students):
-                                st.session_state.show_enrollment_resume_banner = True
-                            else:
-                                st.session_state.show_enrollment_resume_banner = False
+                    if selected_call_type == "Placement":
+                        all_plc_rows = fetch_placement_master_data(sheets.get("placement"))
+                        plc_students = get_placement_students_for_spoc(all_plc_rows, u)
+                        st.session_state.allocated_numbers = [s["contact_number"] for s in plc_students]
+                        saved_q, saved_act = get_saved_placement_index(u, plc_students)
+                        st.session_state.placement_queue_index = saved_q
+                        st.session_state.placement_active_call_index = saved_act
+                        if saved_q > 0 and saved_q < len(plc_students):
+                            st.session_state.show_placement_resume_banner = True
                         else:
-                            alloc_data = fetch_allocation_data()
-                            spoc_numbers = [
-                                str(r.get("phone_number")).strip() for r in alloc_data 
-                                if str(r.get("SPOC_Name")).strip().lower() == u.strip().lower() and r.get("phone_number")
-                            ]
-                            st.session_state.allocated_numbers = spoc_numbers
-                            
-                            saved_idx, saved_active = get_spoc_saved_index(u, spoc_numbers)
-                            highest_verified = get_spoc_highest_verified_index(u, spoc_numbers)
-                            if highest_verified >= 0 and (highest_verified + 1) < len(spoc_numbers):
-                                effective_active = max(saved_active, highest_verified + 1)
-                            else:
-                                effective_active = saved_active
-
-                            st.session_state.active_call_index = effective_active
-                            target_idx = saved_idx if (saved_idx > 0 or effective_active == 0) else effective_active
-                            st.session_state.queue_index = target_idx
-                            if target_idx > 0 and target_idx < len(spoc_numbers):
-                                st.session_state.show_resume_banner = True
-                            else:
-                                st.session_state.show_resume_banner = False
-                            
-                            if spoc_numbers:
-                                resume_idx = target_idx if target_idx < len(spoc_numbers) else 0
-                                load_student_by_phone(spoc_numbers[resume_idx])
-                            
-                        st.rerun()
+                            st.session_state.show_placement_resume_banner = False
+                    elif selected_call_type == "Enrollment":
+                        all_enr_rows = fetch_enrollment_master_data(sheets.get("enrollment"))
+                        enr_students = get_enrollment_students_for_spoc(all_enr_rows, u)
+                        st.session_state.allocated_numbers = [s["contact_number"] for s in enr_students]
+                        saved_q, saved_act = get_saved_enrollment_index(u, enr_students)
+                        st.session_state.enrollment_queue_index = saved_q
+                        st.session_state.enrollment_active_call_index = saved_act
+                        if saved_q > 0 and saved_q < len(enr_students):
+                            st.session_state.show_enrollment_resume_banner = True
+                        else:
+                            st.session_state.show_enrollment_resume_banner = False
+                    elif selected_call_type == "Retention":
+                        fetch_retention_master_data.clear()
+                        st.session_state.pop("retention_master_rows", None)
+                        all_ret_rows = fetch_retention_master_data(sheets.get("retention"))
+                        ret_students = get_retention_students_for_spoc(all_ret_rows, u)
+                        st.session_state.allocated_numbers = [s["contact_number"] for s in ret_students]
+                        saved_q, saved_act = get_saved_retention_index(u, ret_students)
+                        st.session_state.retention_queue_index = saved_q
+                        st.session_state.retention_active_call_index = saved_act
+                        if saved_q > 0 and saved_q < len(ret_students):
+                            st.session_state.show_retention_resume_banner = True
+                        else:
+                            st.session_state.show_retention_resume_banner = False
                     else:
-                        st.error("Invalid Username or Password.")
+                        alloc_data = fetch_allocation_data()
+                        spoc_numbers = [
+                            str(r.get("phone_number")).strip() for r in alloc_data 
+                            if str(r.get("SPOC_Name")).strip().lower() == u.strip().lower() and r.get("phone_number")
+                        ]
+                        st.session_state.allocated_numbers = spoc_numbers
+                        
+                        saved_idx, saved_active = get_spoc_saved_index(u, spoc_numbers)
+                        highest_verified = get_spoc_highest_verified_index(u, spoc_numbers)
+                        if highest_verified >= 0 and (highest_verified + 1) < len(spoc_numbers):
+                            effective_active = max(saved_active, highest_verified + 1)
+                        else:
+                            effective_active = saved_active
+
+                        st.session_state.active_call_index = effective_active
+                        target_idx = saved_idx if (saved_idx > 0 or effective_active == 0) else effective_active
+                        st.session_state.queue_index = target_idx
+                        if target_idx > 0 and target_idx < len(spoc_numbers):
+                            st.session_state.show_resume_banner = True
+                        else:
+                            st.session_state.show_resume_banner = False
+                        
+                        if spoc_numbers:
+                            resume_idx = target_idx if target_idx < len(spoc_numbers) else 0
+                            load_student_by_phone(spoc_numbers[resume_idx])
+                        
+                    st.rerun()
+                else:
+                    st.error("Invalid Username or Password.")
         with tab_reg:
             nu = st.text_input("New SPOC Name", key="reg_user")
             np = st.text_input("New Password", type="password", key="reg_pass")
@@ -1387,14 +1417,14 @@ else:
     is_admin = st.session_state.user.strip().lower() in ADMIN_USERS
 
     # --------------------------------------------------------------------------
-    # 💼 MODULE ROUTING: PLACEMENT vs IMPACT ASSESSMENT
+    # 💼 MODULE ROUTING: PLACEMENT vs ENROLLMENT vs RETENTION vs IMPACT ASSESSMENT
     # --------------------------------------------------------------------------
     if st.session_state.get("call_type") == "Placement":
         # Sidebar Project Switcher & User Profile
         st.sidebar.markdown(f"### 👤 Logged In: **{st.session_state.user}**")
         sb_proj = st.sidebar.selectbox(
             "🔄 Switch Call Type",
-            ["Placement", "Enrollment", "Impact Assessment"],
+            ["Placement", "Enrollment", "Retention", "Impact Assessment"],
             index=0,
             key="sb_call_type_switcher_plc"
         )
@@ -1418,6 +1448,15 @@ else:
                 saved_q, saved_act = get_saved_enrollment_index(st.session_state.user, enr_students)
                 st.session_state.enrollment_queue_index = saved_q
                 st.session_state.enrollment_active_call_index = saved_act
+            elif sb_proj == "Retention":
+                fetch_retention_master_data.clear()
+                st.session_state.pop("retention_master_rows", None)
+                all_ret_rows = fetch_retention_master_data(sheets.get("retention"))
+                ret_students = get_retention_students_for_spoc(all_ret_rows, st.session_state.user)
+                st.session_state.allocated_numbers = [s["contact_number"] for s in ret_students]
+                saved_q, saved_act = get_saved_retention_index(st.session_state.user, ret_students)
+                st.session_state.retention_queue_index = saved_q
+                st.session_state.retention_active_call_index = saved_act
             st.rerun()
 
         if st.sidebar.button("🔴 Logout", use_container_width=True, key="sb_plc_logout_btn"):
@@ -1435,7 +1474,7 @@ else:
         st.sidebar.markdown(f"### 👤 Logged In: **{st.session_state.user}**")
         sb_proj_enr = st.sidebar.selectbox(
             "🔄 Switch Call Type",
-            ["Enrollment", "Placement", "Impact Assessment"],
+            ["Enrollment", "Placement", "Retention", "Impact Assessment"],
             index=0,
             key="sb_call_type_switcher_enr"
         )
@@ -1452,6 +1491,22 @@ else:
                 st.session_state.queue_index = saved_idx
                 if spoc_numbers:
                     load_student_by_phone(spoc_numbers[saved_idx if saved_idx < len(spoc_numbers) else 0])
+            elif sb_proj_enr == "Placement":
+                all_plc_rows = fetch_placement_master_data(sheets.get("placement"))
+                plc_students = get_placement_students_for_spoc(all_plc_rows, st.session_state.user)
+                st.session_state.allocated_numbers = [s["contact_number"] for s in plc_students]
+                saved_q, saved_act = get_saved_placement_index(st.session_state.user, plc_students)
+                st.session_state.placement_queue_index = saved_q
+                st.session_state.placement_active_call_index = saved_act
+            elif sb_proj_enr == "Retention":
+                fetch_retention_master_data.clear()
+                st.session_state.pop("retention_master_rows", None)
+                all_ret_rows = fetch_retention_master_data(sheets.get("retention"))
+                ret_students = get_retention_students_for_spoc(all_ret_rows, st.session_state.user)
+                st.session_state.allocated_numbers = [s["contact_number"] for s in ret_students]
+                saved_q, saved_act = get_saved_retention_index(st.session_state.user, ret_students)
+                st.session_state.retention_queue_index = saved_q
+                st.session_state.retention_active_call_index = saved_act
             st.rerun()
 
         if st.sidebar.button("🔴 Logout", use_container_width=True, key="sb_enr_logout_btn"):
@@ -1462,6 +1517,54 @@ else:
 
         # Render complete high speed enrollment verification dashboard
         render_enrollment_dashboard(sheets.get("enrollment"), st.session_state.user, is_admin=is_admin)
+        st.stop()
+
+    elif st.session_state.get("call_type") == "Retention":
+        # Sidebar Project Switcher & User Profile
+        st.sidebar.markdown(f"### 👤 Logged In: **{st.session_state.user}**")
+        sb_proj_ret = st.sidebar.selectbox(
+            "🔄 Switch Call Type",
+            ["Retention", "Placement", "Enrollment", "Impact Assessment"],
+            index=0,
+            key="sb_call_type_switcher_ret"
+        )
+        if sb_proj_ret != "Retention":
+            st.session_state.call_type = sb_proj_ret
+            if sb_proj_ret == "Impact Assessment":
+                alloc_data = fetch_allocation_data()
+                spoc_numbers = [
+                    str(r.get("phone_number")).strip() for r in alloc_data 
+                    if str(r.get("SPOC_Name")).strip().lower() == st.session_state.user.strip().lower() and r.get("phone_number")
+                ]
+                st.session_state.allocated_numbers = spoc_numbers
+                saved_idx, saved_active = get_spoc_saved_index(st.session_state.user, spoc_numbers)
+                st.session_state.queue_index = saved_idx
+                if spoc_numbers:
+                    load_student_by_phone(spoc_numbers[saved_idx if saved_idx < len(spoc_numbers) else 0])
+            elif sb_proj_ret == "Placement":
+                all_plc_rows = fetch_placement_master_data(sheets.get("placement"))
+                plc_students = get_placement_students_for_spoc(all_plc_rows, st.session_state.user)
+                st.session_state.allocated_numbers = [s["contact_number"] for s in plc_students]
+                saved_q, saved_act = get_saved_placement_index(st.session_state.user, plc_students)
+                st.session_state.placement_queue_index = saved_q
+                st.session_state.placement_active_call_index = saved_act
+            elif sb_proj_ret == "Enrollment":
+                all_enr_rows = fetch_enrollment_master_data(sheets.get("enrollment"))
+                enr_students = get_enrollment_students_for_spoc(all_enr_rows, st.session_state.user)
+                st.session_state.allocated_numbers = [s["contact_number"] for s in enr_students]
+                saved_q, saved_act = get_saved_enrollment_index(st.session_state.user, enr_students)
+                st.session_state.enrollment_queue_index = saved_q
+                st.session_state.enrollment_active_call_index = saved_act
+            st.rerun()
+
+        if st.sidebar.button("🔴 Logout", use_container_width=True, key="sb_ret_logout_btn"):
+            st.session_state.logged_in = False
+            st.session_state.user = ""
+            st.session_state.allocated_numbers = []
+            st.rerun()
+
+        # Render complete high speed retention verification dashboard
+        render_retention_dashboard(sheets.get("retention"), st.session_state.user, is_admin=is_admin)
         st.stop()
 
     # ==========================================================================
@@ -1503,7 +1606,7 @@ else:
     st.sidebar.markdown(f"### 👤 Logged In: **{st.session_state.user}**")
     sb_proj_ia = st.sidebar.selectbox(
         "🔄 Switch Call Type",
-        ["Impact Assessment", "Placement", "Enrollment"],
+        ["Impact Assessment", "Placement", "Enrollment", "Retention"],
         index=0,
         key="sb_call_type_switcher_ia"
     )
@@ -1516,6 +1619,22 @@ else:
             saved_q, saved_act = get_saved_enrollment_index(st.session_state.user, enr_students)
             st.session_state.enrollment_queue_index = saved_q
             st.session_state.enrollment_active_call_index = saved_act
+        elif sb_proj_ia == "Placement":
+            all_plc_rows = fetch_placement_master_data(sheets.get("placement"))
+            plc_students = get_placement_students_for_spoc(all_plc_rows, st.session_state.user)
+            st.session_state.allocated_numbers = [s["contact_number"] for s in plc_students]
+            saved_q, saved_act = get_saved_placement_index(st.session_state.user, plc_students)
+            st.session_state.placement_queue_index = saved_q
+            st.session_state.placement_active_call_index = saved_act
+        elif sb_proj_ia == "Retention":
+            fetch_retention_master_data.clear()
+            st.session_state.pop("retention_master_rows", None)
+            all_ret_rows = fetch_retention_master_data(sheets.get("retention"))
+            ret_students = get_retention_students_for_spoc(all_ret_rows, st.session_state.user)
+            st.session_state.allocated_numbers = [s["contact_number"] for s in ret_students]
+            saved_q, saved_act = get_saved_retention_index(st.session_state.user, ret_students)
+            st.session_state.retention_queue_index = saved_q
+            st.session_state.retention_active_call_index = saved_act
         st.rerun()
     st.sidebar.markdown("---")
     
